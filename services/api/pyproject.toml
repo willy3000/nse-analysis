@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nse-platform"
+version = "0.1.0"
+description = "NSE (Nairobi Securities Exchange) investment intelligence platform - API, worker and analytics"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "sqlalchemy>=2.0.36",
+  "alembic>=1.14",
+  "psycopg[binary]>=3.2",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "httpx>=0.27",
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "apscheduler>=3.10,<4",
+  "redis>=5",
+  "argon2-cffi>=23",
+  "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov", "respx>=0.21", "ta>=0.11", "ruff>=0.6", "mypy>=1.11", "pgserver>=0.1.4"]
+
+[project.scripts]
+nse-api = "nse_platform.main:run"
+nse-worker = "nse_platform.worker.main:run"
+nse-cli = "nse_platform.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nse_platform*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning:ta.*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+ignore = ["S101", "B008", "S311", "UP038"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"alembic/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
