@@ -260,3 +260,32 @@ def score_methodology(universe: Universe = None, db: Session = Depends(get_db)) 
                                                   AnalyticsReport.universe == u))
     return {**methodology_document(), "calibration": {"universe": u, "computed_at": cal.computed_at if cal else None,
                                                       **(cal.payload if cal else {"status": "not_computed"})}}
+
+
+@router.get("/fundamentals/summary")
+def fundamentals_summary(universe: Universe = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Latest point-in-time fundamental metrics per instrument (for cross-sectional comparison)."""
+    from nse_platform.models import FundamentalMetric
+
+    u = resolve_universe(db, universe)
+    latest = (select(FundamentalMetric.instrument_id, func.max(FundamentalMetric.as_of).label("as_of"))
+              .group_by(FundamentalMetric.instrument_id).subquery())
+    rows = db.execute(select(FundamentalMetric, Instrument).join(
+        latest, (latest.c.instrument_id == FundamentalMetric.instrument_id) & (latest.c.as_of == FundamentalMetric.as_of))
+        .join(Instrument, Instrument.id == FundamentalMetric.instrument_id)
+        .where(Instrument.is_synthetic.is_(u == "synthetic"))).all()
+    sectors = sector_names(db)
+    by: dict[int, dict[str, Any]] = {}
+    for m, inst in rows:
+        e = by.setdefault(inst.id, {**instrument_ref(inst, sectors), "as_of": m.as_of, "period_end": m.period_end,
+                                    "metrics": {}})
+        e["metrics"][m.metric] = m.value
+    snaps = {s.instrument_id: s.quality_score for s in db.scalars(select(InstrumentSnapshot).where(
+        InstrumentSnapshot.instrument_id.in_(list(by)), InstrumentSnapshot.timeframe == "1d"))}
+    items = sorted(by.values(), key=lambda e: e["symbol"])
+    for e in items:
+        e["quality_score"] = snaps.get(e["id"])
+        e["has_statements"] = e["period_end"] is not None
+    return {"universe": u, "items": items,
+            "note": "Values are point-in-time as of each instrument's last session. Missing statements mean the "
+                    "metric is unavailable, not zero."}

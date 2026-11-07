@@ -131,3 +131,42 @@ def test_http_client_is_read_only():
     p = provider()
     with pytest.raises(PermissionError):
         run(p._client().request("POST", "/trade"))
+
+
+# ---- Regression tests from live sandbox payloads observed on 2026-11-07 -------------------------------------
+
+
+@respx.mock
+def test_live_quote_shape_without_asof_uses_last_update_and_session_rule():
+    after_close = {k: v for k, v in stock("SCOM.KE").items() if k not in ("asOf", "dataQuality", "stale")}
+    after_close["lastPriceUpdate"] = "2026-11-06T16:45:26.081Z"  # 19:45 EAT
+    intraday = {**after_close, "symbol": "KCB.KE", "lastPriceUpdate": "2026-11-06T09:00:00Z"}  # 12:00 EAT
+    respx.get(f"{BASE}/market/quotes").mock(return_value=httpx.Response(200, json={
+        "data": [after_close, intraday], "not_found": [], "meta": {"timestamp": "2026-11-07T11:24:29.942Z"}}))
+    q = {x.provider_symbol: x for x in run(provider().get_quotes(["SCOM.KE", "KCB.KE"])).quotes}
+    assert q["SCOM.KE"].latency_class == LatencyClass.END_OF_DAY
+    assert q["KCB.KE"].latency_class == LatencyClass.DELAYED
+
+
+@respx.mock
+def test_flat_market_status_shape():
+    respx.get(f"{BASE}/market/status").mock(return_value=httpx.Response(200, json={
+        "exchange": "NSE", "isOpen": False, "status": "CLOSED", "localOpen": "09:31", "localClose": "15:00",
+        "nextOpen": "2026-11-09T06:31:00.000Z", "reason": "NON_TRADING_DAY", "checkedAt": "2026-11-07T11:24:33Z"}))
+    st = run(provider().get_market_status())
+    assert st.is_open is False and st.reason == "NON_TRADING_DAY" and st.next_open is not None
+
+
+@respx.mock
+def test_sandbox_fixture_corporate_actions_are_skipped_and_intel_symbols_linked():
+    respx.get(f"{BASE}/dividends/SCOM.KE/history").mock(return_value=httpx.Response(200, json={"history": []}))
+    respx.get(f"{BASE}/corporate-actions").mock(return_value=httpx.Response(200, json={"actions": [
+        {"id": "ca_sandbox_scom_rights_2026", "type": "RIGHTS_ISSUE", "title": "Sandbox rights issue"},
+        {"id": "real1", "type": "BONUS", "title": "Bonus issue 1:10", "effectiveDate": "2026-12-01"}]}))
+    acts = run(provider().get_corporate_actions("SCOM.KE"))
+    assert [a.external_id for a in acts] == ["ca:real1"]
+    respx.get(f"{BASE}/market-intel").mock(return_value=httpx.Response(200, json={"articles": [
+        {"id": "a1", "title": "Britam shares jump", "symbols": ["BRIT.KE"], "sourceUrl": None,
+         "publishedAt": "2026-07-21T06:20:45Z"}]}))
+    news = run(provider().get_news(None))
+    assert news[0].provider_symbols == ("BRIT.KE",)

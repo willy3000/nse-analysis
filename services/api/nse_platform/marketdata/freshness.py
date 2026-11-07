@@ -25,7 +25,8 @@ from nse_platform.models import MarketSession
 from nse_platform.models.enums import FreshnessStatus, LatencyClass, ProviderStatus, SessionStatus, TradingStatus
 
 EAT = ZoneInfo("Africa/Nairobi")
-OPEN, CLOSE = time(9, 0), time(15, 0)
+# NSE continuous trading 09:30-15:00 EAT (pre-open from 09:00); provider status reports 09:31-15:00.
+OPEN, CLOSE = time(9, 30), time(15, 0)
 
 
 @dataclass

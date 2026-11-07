@@ -322,9 +322,13 @@ def store_news(session: Session, provider: DataProvider, recs: list[NewsRecord],
             is_synthetic=provider.is_synthetic,
         ).on_conflict_do_nothing(index_elements=["provider_id", "external_id"]).returning(NewsArticle.id)
         aid = session.scalar(stmt)
+        if aid is None:  # already stored: still (re)link instruments that may have been discovered since
+            aid = session.scalar(select(NewsArticle.id).where(NewsArticle.provider_id == provider.id,
+                                                              NewsArticle.external_id == r.external_id))
+        else:
+            n += 1
         if aid is None:
             continue
-        n += 1
         for ps in r.provider_symbols:
             iid = symbol_map.get(ps)
             if iid:

@@ -55,7 +55,7 @@ def status(db: Session = Depends(get_db)) -> dict[str, Any]:
     provs = {p.id: p for p in db.scalars(select(DataProvider))}
     return {
         "exchange": "NSE", "is_open": is_open, "reason": reason, "server_time": now.isoformat(),
-        "local_time": now.astimezone(EAT).isoformat(), "trading_hours": {"open": "09:00", "close": "15:00",
+        "local_time": now.astimezone(EAT).isoformat(), "trading_hours": {"open": "09:30", "close": "15:00",
                                                                         "timezone": "Africa/Nairobi"},
         "last_completed_session": last_completed_session(db).isoformat(),
         "calendar_note": "Session calendar from provider holiday data where available; otherwise weekdays.",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -63,6 +63,15 @@ _CA_TYPES = {
 }
 
 
+EAT = timezone(timedelta(hours=3))
+SESSION_OPEN, SESSION_CLOSE = time(9, 30), time(15, 0)  # NSE continuous trading (provider reports 09:31-15:00)
+
+
+def _is_sandbox_fixture(item: dict[str, Any]) -> bool:
+    text = " ".join(str(item.get(k) or "") for k in ("id", "title", "summary")).lower()
+    return "sandbox" in text
+
+
 def local_symbol(provider_symbol: str) -> str:
     return provider_symbol[: -len(SUFFIX)] if provider_symbol.upper().endswith(SUFFIX) else provider_symbol
 
@@ -102,6 +111,7 @@ class MyStocksProvider(MarketDataProvider):
                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json",
                          "User-Agent": "nse-intelligence-platform/0.1"},
                 timeout=timeout,
+                min_interval=0.25,  # <= 240 req/min, under the sandbox (300) limit; Starter tier is 100/min
                 **kwargs,
             )
             self.rate_limit = self._http.rate_limit
@@ -176,11 +186,19 @@ class MyStocksProvider(MarketDataProvider):
 
     # ------------------------------------------------------------------ quotes
     def _quote(self, item: dict[str, Any], response_ts: datetime | None) -> QuoteRecord | None:
+        """Map a quote. Live sandbox/production payloads (verified 2026-11-07) omit `asOf`/`dataQuality` and only
+        carry `lastPriceUpdate`, the provider's last refresh time. When no explicit delay mode is given, an update
+        stamped outside the 09:30-15:00 EAT session is an END_OF_DAY observation; inside the session it is a
+        15-minute DELAYED observation. Never LIVE."""
         dq = item.get("dataQuality") or {}
         market_ts = parse_dt(item.get("asOf")) or parse_dt(dq.get("asOf")) or parse_dt(item.get("lastPriceUpdate"))
         if market_ts is None:
             return None  # cannot place the observation in time -> rejected upstream as data-quality issue
-        mode = str(dq.get("delayMode") or "DELAYED").upper()
+        mode = str(dq.get("delayMode") or "").upper()
+        if mode not in ("DELAYED", "END_OF_DAY"):
+            local = market_ts.astimezone(EAT)
+            in_session = local.weekday() < 5 and SESSION_OPEN <= local.time() < SESSION_CLOSE
+            mode = "DELAYED" if in_session else "END_OF_DAY"
         latency = LatencyClass.END_OF_DAY if mode == "END_OF_DAY" else LatencyClass.DELAYED
         return QuoteRecord(
             provider_symbol=item["symbol"],
@@ -271,8 +289,10 @@ class MyStocksProvider(MarketDataProvider):
     # ------------------------------------------------------------------ market status / calendar
     async def get_market_status(self) -> MarketStatusRecord:
         data = await self._client().get_json("/market/status", {"exchange": EXCHANGE})
-        ex = (data.get("exchanges") or {}).get(EXCHANGE)
-        if not isinstance(ex, dict):
+        # Documented shape is {"exchanges": {"NSE": {...}}}; with ?exchange=NSE the live API returns the exchange
+        # object at the top level (verified 2026-11-07). Accept both.
+        ex = (data.get("exchanges") or {}).get(EXCHANGE) if isinstance(data.get("exchanges"), dict) else data
+        if not isinstance(ex, dict) or ("isOpen" not in ex and "status" not in ex):
             raise ProviderBadResponse("market status response has no NSE entry")
         return MarketStatusRecord(
             exchange_code=EXCHANGE,
@@ -325,6 +345,8 @@ class MyStocksProvider(MarketDataProvider):
             atype = str(a.get("type") or "").upper()
             if atype.startswith("DIVIDEND") or not a.get("id"):
                 continue  # cash dividends come from the dividends endpoint (avoid double counting)
+            if _is_sandbox_fixture(a):
+                continue  # the sandbox injects deterministic test events (e.g. "Sandbox rights issue"): not real
             out.append(
                 CorporateActionRecord(
                     external_id=f"ca:{a['id']}",
@@ -386,8 +408,10 @@ class MyStocksProvider(MarketDataProvider):
                         category=a.get("category"),
                         title=a["title"],
                         summary=a.get("summary"),
+                        url=a.get("sourceUrl") or None,
                         published_at=parse_dt(a.get("publishedAt") or a.get("createdAt")),
-                        publisher="MyStocks Market Intel",
+                        publisher=a.get("source") or "MyStocks Market Intel",
+                        provider_symbols=tuple(str(x) for x in a.get("symbols") or []),
                     )
                 )
         return out

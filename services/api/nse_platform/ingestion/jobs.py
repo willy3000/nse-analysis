@@ -115,12 +115,28 @@ async def sync_instruments(providers: dict[str, MarketDataProvider]) -> list[dic
         run.items_succeeded = len(records)
         run.rows_written = counts["created"] + counts["updated"]
         run.details = counts
-        try:
-            today = date.today()
-            hol = await p.get_holidays(today - timedelta(days=365 * 12), today + timedelta(days=365))
-            store.store_calendar(s, prow, hol, today - timedelta(days=365 * 12), today + timedelta(days=365))
-        except NotSupported:
-            pass
+        # Calendar is best-effort and must never undo the instrument sync. Providers cap the range (MyStocks: 2y).
+        today = date.today()
+        start = today - timedelta(days=365 * 11)
+        cur, holidays, cal_error = start, [], None
+        while cur <= today + timedelta(days=365):
+            win_end = min(cur + timedelta(days=364), today + timedelta(days=365))
+            try:
+                holidays.extend(await p.get_holidays(cur, win_end))
+            except NotSupported:
+                cal_error = "not supported"
+                break
+            except ProviderError as exc:
+                cal_error = str(exc)[:300]
+                break
+            cur = win_end + timedelta(days=1)
+        if cal_error != "not supported" and holidays:
+            # Only assert TRADING/HOLIDAY status for years the provider actually covers; earlier dates stay unknown
+            # rather than being presumed trading days.
+            covered_from = date(min(h.day for h in holidays).year, 1, 1)
+            store.store_calendar(s, prow, holidays, covered_from, today + timedelta(days=365))
+        run.details = {**counts, "holidays": len(holidays), "calendar_error": cal_error}
+
     return await _run_job("sync_instruments", providers, body)
 
 
@@ -132,6 +148,8 @@ async def ingest_history(providers: dict[str, MarketDataProvider], start: date |
 
     async def body(s: Session, p: MarketDataProvider, prow: DataProvider, run: store.IngestionRun) -> None:
         targets = _instrument_targets(s, prow, include_suspended=True)
+        if not targets:
+            raise ProviderError("no instruments are linked to this provider - run sync_instruments first")
         if symbols:
             targets = [t for t in targets if t[1] in symbols or t[1].split(".")[0] in symbols]
         run.items_requested = len(targets)
@@ -176,6 +194,8 @@ async def ingest_history(providers: dict[str, MarketDataProvider], start: date |
 async def poll_quotes(providers: dict[str, MarketDataProvider]) -> list[dict[str, object]]:
     async def body(s: Session, p: MarketDataProvider, prow: DataProvider, run: store.IngestionRun) -> None:
         targets = _instrument_targets(s, prow)
+        if not targets:
+            raise ProviderError("no instruments are linked to this provider - run sync_instruments first")
         sym_map = {t[1]: t[0] for t in targets}
         run.items_requested = len(targets)
         batch = await p.get_quotes(list(sym_map))
@@ -206,6 +226,8 @@ async def ingest_corporate(providers: dict[str, MarketDataProvider]) -> list[dic
 
     async def body(s: Session, p: MarketDataProvider, prow: DataProvider, run: store.IngestionRun) -> None:
         targets = _instrument_targets(s, prow, include_suspended=True)
+        if not targets:
+            raise ProviderError("no instruments are linked to this provider - run sync_instruments first")
         sym_map = {t[1]: t[0] for t in targets}
         run.items_requested = len(targets)
         counts = {"corporate_actions": 0, "news": 0, "profiles": 0, "financial_items": 0}

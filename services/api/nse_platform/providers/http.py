@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,6 +38,7 @@ class ReadOnlyHttpClient:
         backoff_cap: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Any = asyncio.sleep,
+        min_interval: float = 0.0,
     ):
         self._client = httpx.AsyncClient(
             base_url=base_url, headers=headers, timeout=timeout, transport=transport, follow_redirects=False
@@ -46,6 +48,8 @@ class ReadOnlyHttpClient:
         self.backoff_cap = backoff_cap
         self.rate_limit = RateLimitInfo()
         self._sleep = sleep
+        self.min_interval = min_interval  # proactive pacing to stay under the provider's per-minute limit
+        self._last_request = 0.0
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -73,6 +77,11 @@ class ReadOnlyHttpClient:
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            if self.min_interval:
+                wait = self._last_request + self.min_interval - time.monotonic()
+                if wait > 0:
+                    await self._sleep(wait)
+                self._last_request = time.monotonic()
             try:
                 resp = await self._client.request("GET", path, params=clean)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
