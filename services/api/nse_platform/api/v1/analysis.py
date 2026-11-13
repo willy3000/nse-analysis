@@ -23,7 +23,7 @@ from nse_platform.models import (
     TrendAnalysis,
     User,
 )
-from nse_platform.opportunities.detectors import TECHNICAL
+from nse_platform.opportunities.detectors import SIGNAL_CALC_VERSION, TECHNICAL
 
 router = APIRouter(tags=["analysis"], dependencies=[Depends(current_user)])
 Universe = Literal["real", "synthetic"] | None
@@ -146,7 +146,8 @@ def opportunities(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     u = resolve_universe(db, universe)
-    stmt = select(OpportunitySignal, Instrument).join(Instrument).where(Instrument.is_synthetic.is_(u == "synthetic"))
+    stmt = select(OpportunitySignal, Instrument).join(Instrument).where(
+        Instrument.is_synthetic.is_(u == "synthetic"), OpportunitySignal.calc_version == SIGNAL_CALC_VERSION)
     if not include_backfill:
         stmt = stmt.where(OpportunitySignal.is_backfill.is_(False))
     if status != "ALL":
@@ -213,7 +214,8 @@ def surges(universe: Universe = None, days: int = Query(30, ge=1, le=3650), db: 
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = db.execute(select(OpportunitySignal, Instrument).join(Instrument).where(
         Instrument.is_synthetic.is_(u == "synthetic"), OpportunitySignal.signal_type.in_(SURGE_TYPES),
-        OpportunitySignal.is_backfill.is_(False), OpportunitySignal.bar_ts >= since)
+        # Replayed detections are included: they used only data available at that day's close.
+        OpportunitySignal.calc_version == SIGNAL_CALC_VERSION, OpportunitySignal.bar_ts >= since)
         .order_by(OpportunitySignal.bar_ts.desc(), OpportunitySignal.id.desc()).limit(200)).all()
     snaps = {s.instrument_id: s for s in db.scalars(select(InstrumentSnapshot).where(
         InstrumentSnapshot.instrument_id.in_([i.id for _, i in rows]), InstrumentSnapshot.timeframe == "1d"))}

@@ -151,7 +151,7 @@ function SurgesInner() {
                 <tr key={s.id} onClick={() => router.replace(`/surges?id=${s.id}`)} className={`cursor-pointer hover:bg-raised/50 ${sel === s.id ? "bg-raised" : ""}`}>
                   <Td><SymbolLink symbol={s.instrument.symbol} name={s.instrument.name} synthetic={s.instrument.is_synthetic} /></Td>
                   <Td><Badge tone={s.signal_type === "PRE_BREAKOUT_SQUEEZE" ? "info" : "accent"}>{label(s.signal_type)}</Badge></Td>
-                  <Td num>{date(s.bar_ts)}</Td><Td align="right"><Change v={s.change_since_signal} /></Td></tr>))}</tbody></Table>
+                  <Td num>{date(s.bar_ts)}{s.is_backfill && <span className="block text-2xs text-muted" title="Found by replaying history with only the data available that day">replay</span>}</Td><Td align="right"><Change v={s.change_since_signal} /></Td></tr>))}</tbody></Table>
           )}
         </Panel>
         <div>{sel ? <SurgeSheet id={sel} /> : <Empty title="Select a flagged stock" />}</div>
