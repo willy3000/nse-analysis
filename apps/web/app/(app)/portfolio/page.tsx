@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/shell";
 import { Badge, Button, Empty, ErrorState, Field, Input, Panel, Select, Spinner, Stat, Table, Td, Th } from "@/components/ui";
 import { api } from "@/lib/api";
 import { date, kes, label, num, pct, price, toneClass } from "@/lib/format";
-import { useApi } from "@/lib/hooks";
+import { useApi, useUniverse } from "@/lib/hooks";
 import type { Freshness, InstrumentRef } from "@/lib/types";
 
 interface Position { instrument: InstrumentRef; quantity: number; avg_cost: number; cost_basis: number; price: number | null;
@@ -28,6 +28,95 @@ interface Perf { series: { date: string; value: number; twr: number; benchmark: 
   benchmark_return?: number | null; benchmark?: string; method?: string; note?: string }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+interface Preview { instrument: InstrumentRef; side: "BUY" | "SELL"; quantity: number; price: number; price_freshness: Freshness;
+  consideration: number; fees: Record<string, number>; net_cash_flow: number; cash_before: number; cash_after: number;
+  held_before: number; held_after: number; warnings: string[]; errors: string[]; can_execute: boolean }
+interface TicketState { symbol: string; side: "BUY" | "SELL"; mode: "quantity" | "amount" | "all"; value: string }
+
+function OrderTicket({ pid, ticket, setTicket, onDone }: { pid: number; ticket: TicketState;
+  setTicket: (t: TicketState) => void; onDone: () => void }) {
+  const [universe] = useUniverse();
+  const search = useApi<{ items: (InstrumentRef & { price: { price: number | null } })[] }>(
+    ticket.symbol.length >= 1 ? "/instruments" : null, { q: ticket.symbol, limit: 15, universe: universe ?? undefined });
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [err, setErr] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  const body = useMemo(() => {
+    const v = Number(ticket.value);
+    if (!ticket.symbol) return null;
+    if (ticket.mode === "all") return { symbol: ticket.symbol, side: ticket.side, sell_all: true };
+    if (!v || v <= 0) return null;
+    return ticket.mode === "amount" ? { symbol: ticket.symbol, side: ticket.side, amount: v }
+      : { symbol: ticket.symbol, side: ticket.side, quantity: Math.floor(v) };
+  }, [ticket]);
+  useEffect(() => {
+    setPreview(null);
+    setErr(null);
+    if (!body) return;
+    const h = setTimeout(() => api<Preview>(`/portfolio/${pid}/orders/preview`, { method: "POST", body })
+      .then(setPreview).catch(setErr), 350);
+    return () => clearTimeout(h);
+  }, [body, pid]);
+  async function place() {
+    if (!body) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ filled: Preview }>(`/portfolio/${pid}/orders`, { method: "POST", body });
+      setDone(`${r.filled.side === "BUY" ? "Bought" : "Sold"} ${num(r.filled.quantity, 0)} ${r.filled.instrument.symbol} @ ${price(r.filled.price)}`);
+      setTicket({ ...ticket, value: "" });
+      onDone();
+    } catch (e) {
+      setErr(e);
+    }
+    setBusy(false);
+  }
+  const t = ticket;
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-1">
+        {(["BUY", "SELL"] as const).map((sd) => (
+          <button key={sd} onClick={() => setTicket({ ...t, side: sd, mode: sd === "BUY" ? (t.mode === "all" ? "quantity" : t.mode) : (t.mode === "amount" ? "quantity" : t.mode) })}
+            className={`rounded border py-1.5 text-sm font-semibold ${t.side === sd ? (sd === "BUY" ? "border-up bg-up/15 text-up" : "border-down bg-down/15 text-down") : "border-line text-muted"}`}>
+            {sd === "BUY" ? "Buy" : "Sell"}</button>))}
+      </div>
+      <Field label="Stock">
+        <Input list="ticket-symbols" placeholder="Type a symbol or name, e.g. SCOM" value={t.symbol}
+          onChange={(e) => setTicket({ ...t, symbol: (e.target.value.toUpperCase().split(" ")[0] ?? "") })} />
+        <datalist id="ticket-symbols">{(search.data?.items ?? []).map((i) => (
+          <option key={i.id} value={i.symbol}>{`${i.name}${i.price.price != null ? ` - ${price(i.price.price)}` : ""}`}</option>))}</datalist>
+      </Field>
+      <div className="flex items-end gap-2">
+        <Field label="Order by"><Select value={t.mode} onChange={(e) => setTicket({ ...t, mode: e.target.value as TicketState["mode"] })}>
+          <option value="quantity">Shares</option>{t.side === "BUY" && <option value="amount">KES amount</option>}
+          {t.side === "SELL" && <option value="all">Sell all</option>}</Select></Field>
+        {t.mode !== "all" && <Field label={t.mode === "amount" ? "Amount (KES, incl. fees)" : "Shares"} className="flex-1">
+          <Input inputMode="decimal" value={t.value} onChange={(e) => setTicket({ ...t, value: e.target.value })} /></Field>}
+      </div>
+      {preview && (
+        <div className="rounded border border-line bg-raised/40 p-2 text-xs">
+          <div className="mb-1 flex items-center justify-between"><span className="font-semibold">{preview.instrument.symbol} - {preview.instrument.name}</span>
+            <FreshnessBadge f={preview.price_freshness} /></div>
+          <KV k="Market price" v={price(preview.price)} />
+          <KV k="Shares" v={num(preview.quantity, 0)} />
+          <KV k="Value" v={kes(preview.consideration)} />
+          <KV k="Fees & levies" v={kes(preview.fees.total)} />
+          <KV k={preview.side === "BUY" ? "Total cost" : "You receive"} v={<span className="font-semibold">{kes(Math.abs(preview.net_cash_flow))}</span>} />
+          <KV k="Cash after" v={kes(preview.cash_after)} />
+          <KV k="Shares held after" v={num(preview.held_after, 0)} />
+          {preview.errors.map((m, i) => <p key={i} className="mt-1 text-down">{m}</p>)}
+          {preview.warnings.map((m, i) => <p key={i} className="mt-1 text-2xs text-muted">{m}</p>)}
+        </div>
+      )}
+      {err ? <ErrorState error={err} /> : null}
+      <Button variant="primary" className="w-full" disabled={!preview?.can_execute} loading={busy} onClick={place}>
+        Place paper {t.side === "BUY" ? "buy" : "sell"} order</Button>
+      {done && <p className="text-xs text-up" role="status">{done}</p>}
+    </div>
+  );
+}
 
 function TxnForm({ p, defaultSymbol, onDone }: { p: Detail; defaultSymbol: string; onDone: () => void }) {
   const [t, setT] = useState({ txn_type: "BUY", trade_date: today(), symbol: defaultSymbol, quantity: "", price: "", amount: "", fees: "", notes: "" });
@@ -81,6 +170,7 @@ function TxnForm({ p, defaultSymbol, onDone }: { p: Detail; defaultSymbol: strin
 
 function PortfolioView({ id, defaultSymbol }: { id: number; defaultSymbol: string }) {
   const qc = useQueryClient();
+  const [ticket, setTicket] = useState<TicketState>({ symbol: defaultSymbol, side: "BUY", mode: "amount", value: "" });
   const d = useApi<Detail>(`/portfolio/${id}`);
   const perf = useApi<Perf>(`/portfolio/${id}/performance`);
   const refresh = () => qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/portfolio") });
@@ -107,13 +197,17 @@ function PortfolioView({ id, defaultSymbol }: { id: number; defaultSymbol: strin
           <Panel title="Positions" bodyClassName="p-0">
             {p.positions.length === 0 ? <Empty title="No open positions" /> : (
               <Table><thead><tr><Th>Instrument</Th><Th align="right">Qty</Th><Th align="right">Avg cost</Th><Th align="right">Price</Th><Th>Freshness</Th>
-                <Th align="right">Value</Th><Th align="right">Unrealised</Th><Th align="right">Weight</Th></tr></thead>
+                <Th align="right">Value</Th><Th align="right">Unrealised</Th><Th align="right">Weight</Th><Th>Trade</Th></tr></thead>
                 <tbody>{p.positions.map((x) => (
                   <tr key={x.instrument.id}><Td><SymbolLink symbol={x.instrument.symbol} name={x.instrument.name} synthetic={x.instrument.is_synthetic} /></Td>
                     <Td align="right" num>{num(x.quantity, 0)}</Td><Td align="right" num>{price(x.avg_cost)}</Td><Td align="right" num>{price(x.price)}</Td>
                     <Td><FreshnessBadge f={x.freshness} compact /></Td><Td align="right" num>{num(x.market_value, 0)}</Td>
                     <Td align="right" num className={toneClass(x.unrealized_pnl)}>{num(x.unrealized_pnl, 0)} ({pct(x.unrealized_pct, 1)})</Td>
-                    <Td align="right" num>{pct(x.weight, 1, false)}</Td></tr>))}</tbody></Table>
+                    <Td align="right" num>{pct(x.weight, 1, false)}</Td>
+                    <Td><div className="flex gap-1">
+                      <Button size="sm" onClick={() => setTicket({ symbol: x.instrument.symbol, side: "BUY", mode: "amount", value: "" })}>Buy</Button>
+                      <Button size="sm" variant="danger" onClick={() => setTicket({ symbol: x.instrument.symbol, side: "SELL", mode: "all", value: "" })}>Sell</Button>
+                    </div></Td></tr>))}</tbody></Table>
             )}
           </Panel>
           <Panel title="Performance (time-weighted) vs benchmark">
@@ -136,7 +230,11 @@ function PortfolioView({ id, defaultSymbol }: { id: number; defaultSymbol: strin
           </Panel>
         </div>
         <div className="space-y-3">
-          <Panel title="Simulated transaction"><TxnForm p={p} defaultSymbol={defaultSymbol} onDone={refresh} /></Panel>
+          <Panel title="Order ticket (paper)"><OrderTicket pid={p.id} ticket={ticket} setTicket={setTicket} onDone={refresh} /></Panel>
+          <Panel title="Record other transaction" subtitle="Dividends, deposits, withdrawals, or a trade at a past date and price">
+            <details><summary className="cursor-pointer text-xs text-accent">Open manual ledger entry</summary>
+              <div className="mt-2"><TxnForm p={p} defaultSymbol={defaultSymbol} onDone={refresh} /></div></details>
+          </Panel>
           <Panel title="Allocation & concentration">
             {Object.entries(p.allocation.by_sector).map(([k, v]) => <KV key={k} k={k} v={pct(v, 1, false)} />)}
             <KV k="Cash" v={pct(p.allocation.cash, 1, false)} />

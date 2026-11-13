@@ -152,6 +152,92 @@ def add_transaction(body: TransactionIn, db: Session = Depends(get_db),
             "net_cash_flow": t.net_cash_flow, "portfolio": psvc.summary(db, p)}
 
 
+class OrderIn(BaseModel):
+    """Paper market order: fills at the latest available price (delayed/end-of-day), like a broker ticket."""
+
+    symbol: str = Field(min_length=1, max_length=32)
+    side: Literal["BUY", "SELL"]
+    quantity: int | None = Field(None, gt=0, le=100_000_000)
+    amount: float | None = Field(None, gt=0, le=1e11, description="BUY only: KES to spend incl. fees")
+    sell_all: bool = False
+
+
+def _plan_order(db: Session, p: Portfolio, body: OrderIn) -> dict[str, Any]:
+    """Resolve price/quantity/fees and check cash, holdings, liquidity and data freshness. Never writes."""
+    inst = get_instrument(db, body.symbol)
+    if inst.security_type == "BOND":
+        raise _bad("Bond trading is not simulated (pricing and fees cover equities, ETFs and REITs)")
+    pv = price_view(db, [inst])[inst.id]
+    px, fr = pv["price"], pv["freshness"]
+    if px is None or fr["status"] == "UNAVAILABLE":
+        raise _bad(f"No price available for {inst.symbol}; cannot simulate a market order")
+    if inst.trading_status == "SUSPENDED":
+        raise _bad(f"{inst.symbol} is suspended: orders cannot be filled")
+    fm = psvc.fee_model(db, p)
+    lot = inst.lot_size or 1
+    today = date.today()
+    txns = list(db.scalars(select(PortfolioTransaction).where(PortfolioTransaction.portfolio_id == p.id)))
+    cash, hold, _ = psvc._replay(db, txns, today)
+    held = hold[inst.id].qty if inst.id in hold else 0.0
+    if body.side == "SELL" and body.sell_all:
+        qty = int(held)
+    elif body.quantity:
+        qty = int(body.quantity)
+    elif body.amount and body.side == "BUY":
+        qty = int(body.amount / (px * (1 + fm.rate_estimate())) // lot * lot)
+    else:
+        raise _bad("Enter a quantity" + (" or an amount" if body.side == "BUY" else " (or sell all)"))
+    if qty <= 0:
+        raise _bad("The amount is too small to buy a single share (or lot) after fees")
+    gross = qty * px
+    fees = fm.breakdown(gross)
+    net = -(gross + fees["total"]) if body.side == "BUY" else gross - fees["total"]
+    warnings, errors = [], []
+    if body.side == "BUY" and p.kind == "PAPER" and cash + net < -1e-6:
+        errors.append(f"Insufficient cash: available KES {cash:,.2f}, required KES {-net:,.2f}")
+    if body.side == "SELL" and qty > held + 1e-9:
+        errors.append(f"You hold {held:g} shares of {inst.symbol}; cannot sell {qty}")
+    snap = db.scalar(select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id == inst.id,
+                                                      InstrumentSnapshot.timeframe == "1d"))
+    if snap and snap.avg_volume_20 and qty > 0.1 * snap.avg_volume_20:
+        warnings.append(f"Order is {qty / snap.avg_volume_20:.0%} of average daily volume - a real order this size "
+                        "would likely take several sessions and move the price")
+    if fr["status"] in ("STALE", "HISTORICAL"):
+        warnings.append(f"Price is {fr['status'].lower()} ({fr.get('reason') or 'see Data Centre'}): the simulated "
+                        "fill may differ a lot from what a real order would get")
+    warnings.append("Paper fill at the latest available price (15-min delayed or last close) - no real order is sent")
+    return {"instrument": instrument_ref(inst), "side": body.side, "quantity": qty, "price": px,
+            "price_freshness": fr, "consideration": round(gross, 2), "fees": fees, "net_cash_flow": round(net, 2),
+            "cash_before": round(cash, 2), "cash_after": round(cash + net, 2), "held_before": held,
+            "held_after": held + qty if body.side == "BUY" else held - qty, "warnings": warnings, "errors": errors,
+            "can_execute": not errors}
+
+
+@router.post("/portfolio/{pid}/orders/preview")
+def preview_order(pid: int, body: OrderIn, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    return _plan_order(db, _portfolio(db, user, pid), body)
+
+
+@router.post("/portfolio/{pid}/orders")
+def place_order(pid: int, body: OrderIn, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    p = _portfolio(db, user, pid)
+    plan = _plan_order(db, p, body)
+    if not plan["can_execute"]:
+        raise _bad("; ".join(plan["errors"]))
+    inst = get_instrument(db, body.symbol)
+    fr = plan["price_freshness"]
+    try:
+        t = psvc.record(db, p, txn_type=body.side, trade_date=date.today(), instrument=inst, quantity=plan["quantity"],
+                        price=plan["price"], amount=None, fees=None,
+                        notes=f"Paper market order at {fr['status'].lower().replace('_', ' ')} price "
+                              f"({fr.get('provider')}, observed {fr.get('as_of')})")
+    except psvc.PortfolioError as exc:
+        raise _bad(str(exc)) from exc
+    audit(db, "portfolio.order", user.id, entity="portfolio", entity_id=str(p.id), txn_id=t.id, side=body.side,
+          symbol=inst.symbol, quantity=plan["quantity"])
+    return {"filled": {**plan, "transaction_id": t.id}, "portfolio": psvc.summary(db, p)}
+
+
 @router.delete("/portfolio/transactions/{txn_id}")
 def delete_transaction(txn_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
     t = db.scalar(select(PortfolioTransaction).join(Portfolio).where(

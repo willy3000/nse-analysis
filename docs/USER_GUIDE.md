@@ -133,7 +133,7 @@ The **Data** badge in the top bar summarises everything:
 | **Instruments** | Browse the catalogue. Open any symbol for the full research page: chart (D/W/M, adjusted or raw, moving averages, Bollinger bands, support/resistance), multi-timeframe trend, all indicators, the three score breakdowns, performance, risk, liquidity, fundamentals, dividends, events, news, signal history and data coverage. |
 | **Fundamentals** | Compare valuation, profitability and dividend metrics across companies, where data exists. |
 | **Strategy Lab** | Build rule-based strategies and backtest them with real NSE costs (section 7). |
-| **Paper Portfolio** | Simulate buys, sells and dividends with realistic fees, and track profit and loss, allocation, concentration, and performance against a benchmark. |
+| **Paper Portfolio** | Trade like a broker account with simulated money. Use the **order ticket**: choose Buy or Sell, type the stock, enter shares or a KES amount, check the live preview (market price, fees, total, cash after), then **Place paper order**. The fill uses the latest available price (15-min delayed or last close). Each position has one-click **Buy** and **Sell** buttons. The manual ledger under *Record other transaction* is for dividends, deposits, withdrawals and back-dated trades. |
 | **Watchlists** | Track instruments with your own entry, target and stop reference levels, tags and notes. |
 | **Alerts** | Get in-app notifications for price levels, RSI, moving-average crosses, volume spikes, new signals, dividends, announcements, risk-score jumps and changes in fundamental metrics. |
 | **News & Events** | Read headlines from the provider, linked to instruments, and a calendar of corporate events. No AI summaries or sentiment scores are generated. |

@@ -265,3 +265,26 @@ def test_intraday_surge_only_during_session(seeded):
         sig = db.scalar(select(OpportunitySignal).where(OpportunitySignal.signal_type == "INTRADAY_SURGE"))
         assert sig.timeframe == "15m" and sig.invalidation["price"] > 0
         db.rollback()
+
+
+def test_paper_order_ticket(client):
+    h = register(client, "ticket@x.io")
+    p = client.post("/api/v1/portfolio", json={"name": "T", "initial_cash": 50_000}, headers=h).json()
+    pv = client.post(f"/api/v1/portfolio/{p['id']}/orders/preview", json={"symbol": "ZZTEL", "side": "BUY",
+                                                                          "amount": 20_000}, headers=h).json()
+    assert pv["can_execute"] and pv["price"] > 0 and pv["quantity"] > 0
+    assert pv["consideration"] + pv["fees"]["total"] <= 20_000
+    fill = client.post(f"/api/v1/portfolio/{p['id']}/orders", json={"symbol": "ZZTEL", "side": "BUY",
+                                                                    "amount": 20_000}, headers=h).json()
+    assert fill["filled"]["quantity"] == pv["quantity"]
+    assert fill["portfolio"]["positions"][0]["quantity"] == pv["quantity"]
+    big = client.post(f"/api/v1/portfolio/{p['id']}/orders/preview", json={"symbol": "ZZTEL", "side": "BUY",
+                                                                           "quantity": 10_000_000}, headers=h).json()
+    assert not big["can_execute"] and "Insufficient cash" in big["errors"][0]
+    assert client.post(f"/api/v1/portfolio/{p['id']}/orders", json={"symbol": "ZZTEL", "side": "BUY",
+                                                                     "quantity": 10_000_000}, headers=h).status_code == 400
+    sold = client.post(f"/api/v1/portfolio/{p['id']}/orders", json={"symbol": "ZZTEL", "side": "SELL",
+                                                                    "sell_all": True}, headers=h).json()
+    assert sold["portfolio"]["positions"] == [] and sold["filled"]["held_after"] == 0
+    assert client.post(f"/api/v1/portfolio/{p['id']}/orders", json={"symbol": "ZZAIR", "side": "BUY",
+                                                                     "quantity": 100}, headers=h).status_code == 400
