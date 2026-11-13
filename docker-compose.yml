@@ -1,0 +1,65 @@
+# Full stack for local use: docker compose up --build   ->  http://localhost:3000
+# Secrets come from .env (copy .env.example). Never commit .env.
+services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_USER: nse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nse-local-only}
+      POSTGRES_DB: nse
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nse -d nse"]
+      interval: 5s
+      retries: 20
+    ports: ["127.0.0.1:5432:5432"]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  migrate:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    env_file: [.env]
+    environment: &appenv
+      DATABASE_URL: postgresql+psycopg://nse:${POSTGRES_PASSWORD:-nse-local-only}@db:5432/nse
+      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-development}
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    depends_on: { db: { condition: service_healthy } }
+
+  api:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    env_file: [.env]
+    environment: *appenv
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    ports: ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+
+  worker:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    command: ["python", "-m", "nse_platform.worker.main"]
+    env_file: [.env]
+    environment: *appenv
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    stop_grace_period: 2m   # lets a running job finish (graceful shutdown)
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+      args: { API_ORIGIN: "http://api:8000" }
+    depends_on: [api]
+    ports: ["127.0.0.1:3000:3000"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:

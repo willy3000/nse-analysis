@@ -2,7 +2,7 @@
 
 import {
   Activity, Bell, Briefcase, Database, FlaskConical, Gauge, LayoutDashboard, List, LogOut, Moon,
-  Newspaper, ScanSearch, Settings, Sparkles, Sun, TrendingUp, Wallet,
+  Newspaper, ScanSearch, Settings, Sparkles, Sun, TrendingUp, Wallet, Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -18,6 +18,7 @@ export const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/scanner", label: "Market Scanner", icon: ScanSearch },
   { href: "/opportunities", label: "Opportunities", icon: Sparkles },
+  { href: "/surges", label: "Surge Radar", icon: Zap },
   { href: "/trends", label: "Trends", icon: TrendingUp },
   { href: "/instruments", label: "Instruments", icon: List },
   { href: "/fundamentals", label: "Fundamentals", icon: Gauge },

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -212,3 +212,56 @@ def test_health_endpoints(client):
     assert client.get("/health/live").json() == {"status": "ok"}
     r = client.get("/health/ready").json()
     assert r["checks"]["database"]["ok"] is True
+
+
+def test_surge_radar_sheet_and_auto_watchlist(client):
+    from nse_platform.core.db import session_scope
+    from nse_platform.opportunities.surge import WATCHLIST_NAME, auto_watch
+
+    h = register(client, "surge@x.io")
+    items = client.get("/api/v1/surges", params={"days": 3650}).json()["items"]
+    zz = [s for s in items if s["instrument"]["symbol"] == "ZZSURGE" and s["signal_type"] == "PRICE_VOLUME_SURGE"]
+    assert zz, "synthetic demo surge on the last session must be detected live"
+    with session_scope() as db:
+        assert auto_watch(db, datetime(2000, 1, 1, tzinfo=timezone.utc)) >= 1
+        assert auto_watch(db, datetime(2000, 1, 1, tzinfo=timezone.utc)) == 0  # idempotent
+    wl = [w for w in client.get("/api/v1/watchlists").json() if w["name"] == WATCHLIST_NAME]
+    assert wl and any(i["instrument"]["symbol"] == "ZZSURGE" for i in wl[0]["items"])
+    assert client.get("/api/v1/notifications").json()["unread"] >= 1
+    sheet = client.get(f"/api/v1/opportunities/{zz[0]['id']}/sheet", params={"shares": 1000}).json()
+    pos = sheet["position"]
+    assert pos["shares"] == 1000 and pos["buy_fees"]["total"] == pytest.approx(pos["consideration"] * 0.0208, rel=1e-3)
+    assert pos["breakeven_move"] == pytest.approx(0.0208 * 2, abs=0.002)
+    assert sheet["scenarios"], "historical analogues from the replayed surges"
+    s5 = next(s for s in sheet["scenarios"] if s["horizon_sessions"] == 5)
+    med = s5["returns"]["typical_median"]
+    exp = 1000 * pos["entry_price"] * (1 + med) * (1 - 0.0208) - pos["total_cash_needed"]
+    assert s5["pnl"]["typical_median"]["net_pnl"] == pytest.approx(exp, abs=1.0)
+    assert sheet["stop"]["price"] is not None and sheet["stop"]["loss_if_hit"]["net_pnl"] < 0
+    assert client.get("/api/v1/opportunities/999999/sheet").status_code == 404
+    assert h
+
+
+def test_intraday_surge_only_during_session(seeded):
+    from sqlalchemy import select
+
+    from nse_platform.core.db import session_scope
+    from nse_platform.ingestion import store as st
+    from nse_platform.models import Instrument, InstrumentSnapshot, OpportunitySignal, Quote
+    from nse_platform.opportunities.surge import intraday_check
+
+    with session_scope() as db:
+        prow = st.provider_row(db, "synthetic")
+        inst = db.scalar(select(Instrument).where(Instrument.symbol == "ZZTEL"))
+        snap = db.scalar(select(InstrumentSnapshot).where(InstrumentSnapshot.instrument_id == inst.id,
+                                                          InstrumentSnapshot.timeframe == "1d"))
+        now = datetime.now(timezone.utc)
+        for latency, ts in (("END_OF_DAY", now - timedelta(minutes=30)), ("DELAYED", now - timedelta(minutes=20))):
+            db.add(Quote(instrument_id=inst.id, provider_id=prow.id, market_ts=ts, price=snap.last_close * 1.12,
+                         volume=int(snap.avg_volume_20 * 4), currency="KES", latency_class=latency))
+        db.flush()
+        assert intraday_check(db, prow.id) == 1
+        assert intraday_check(db, prow.id) == 0  # once per instrument per session
+        sig = db.scalar(select(OpportunitySignal).where(OpportunitySignal.signal_type == "INTRADAY_SURGE"))
+        assert sig.timeframe == "15m" and sig.invalidation["price"] > 0
+        db.rollback()

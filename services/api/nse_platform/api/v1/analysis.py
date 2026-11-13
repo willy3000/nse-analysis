@@ -202,6 +202,42 @@ def detectors() -> list[dict[str, Any]]:
              "cooldown_bars": d.cooldown} for d in TECHNICAL]
 
 
+@router.get("/surges")
+def surges(universe: Universe = None, days: int = Query(30, ge=1, le=3650), db: Session = Depends(get_db)) -> dict:
+    """Surge Radar: live surge / pre-breakout signals (newest first)."""
+    from datetime import datetime, timedelta, timezone
+
+    from nse_platform.opportunities.surge import SURGE_TYPES
+
+    u = resolve_universe(db, universe)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = db.execute(select(OpportunitySignal, Instrument).join(Instrument).where(
+        Instrument.is_synthetic.is_(u == "synthetic"), OpportunitySignal.signal_type.in_(SURGE_TYPES),
+        OpportunitySignal.is_backfill.is_(False), OpportunitySignal.bar_ts >= since)
+        .order_by(OpportunitySignal.bar_ts.desc(), OpportunitySignal.id.desc()).limit(200)).all()
+    snaps = {s.instrument_id: s for s in db.scalars(select(InstrumentSnapshot).where(
+        InstrumentSnapshot.instrument_id.in_([i.id for _, i in rows]), InstrumentSnapshot.timeframe == "1d"))}
+    sectors = sector_names(db)
+    return {"universe": u, "items": [{**_signal(sg), "instrument": instrument_ref(i, sectors),
+                                      "current_price": snaps[i.id].last_close if i.id in snaps else None,
+                                      "change_since_signal": (snaps[i.id].last_close / sg.reference_price - 1)
+                                      if i.id in snaps and snaps[i.id].last_close else None}
+                                     for sg, i in rows]}
+
+
+@router.get("/opportunities/{signal_id}/sheet")
+def surge_sheet(signal_id: int, shares: int | None = Query(None, ge=1, le=100_000_000),
+                budget: float | None = Query(None, gt=0, le=1e11), db: Session = Depends(get_db)) -> dict:
+    """Surge Sheet: position costs, liquidity, historical outcome scenarios in KES, stop, data quality."""
+    from nse_platform.opportunities.surge import build_sheet
+
+    row = db.execute(select(OpportunitySignal, Instrument).join(Instrument).where(
+        OpportunitySignal.id == signal_id)).first()
+    if row is None:
+        raise not_found("Signal")
+    return build_sheet(db, row[0], row[1], shares, budget)
+
+
 @router.get("/opportunities/{signal_id}")
 def opportunity(signal_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     row = db.execute(select(OpportunitySignal, Instrument).join(Instrument).where(

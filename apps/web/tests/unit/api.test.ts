@@ -23,7 +23,7 @@ describe("api client", () => {
   });
   it("reports network failures clearly", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
-    const err = await api("/market/status").catch((e) => e);
+    const err = (await api("/market/status").catch((e: unknown) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.code).toBe("NETWORK");
   });

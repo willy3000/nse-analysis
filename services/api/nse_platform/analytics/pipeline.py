@@ -57,6 +57,10 @@ def _utc(ts: pd.Timestamp) -> datetime:
 
 
 def _store_indicators(session: Session, iid: int, tf: str, ind: pd.DataFrame) -> None:
+    # Superseded calculation versions are removed so readers never mix versions.
+    session.execute(delete(TechnicalIndicatorRow).where(
+        TechnicalIndicatorRow.instrument_id == iid, TechnicalIndicatorRow.timeframe == tf,
+        TechnicalIndicatorRow.calc_version != ind_lib.INDICATOR_CALC_VERSION))
     stored = session.scalar(select(func.count()).select_from(TechnicalIndicatorRow).where(
         TechnicalIndicatorRow.instrument_id == iid, TechnicalIndicatorRow.timeframe == tf,
         TechnicalIndicatorRow.calc_version == ind_lib.INDICATOR_CALC_VERSION)) or 0
@@ -270,6 +274,7 @@ def _universe_scores(session: Session, results: list[dict[str, Any]], synthetic:
 
 def run_analytics(replay: bool = False, instrument_ids: list[int] | None = None) -> dict[str, Any]:
     summary: dict[str, Any] = {"status": RunStatus.SUCCEEDED.value, "instruments": 0, "failed": [], "replay": replay}
+    started = datetime.now(timezone.utc)
     with advisory_lock("job:analytics") as acquired:
         if not acquired:
             return {"status": RunStatus.SKIPPED.value}
@@ -296,6 +301,10 @@ def run_analytics(replay: bool = False, instrument_ids: list[int] | None = None)
             if results:
                 with session_scope() as s:
                     _universe_scores(s, results, synthetic)
+        with session_scope() as s:
+            from nse_platform.opportunities.surge import auto_watch
+
+            summary["surge_watch_added"] = auto_watch(s, started - timedelta(minutes=1))
     if summary["failed"]:
         summary["status"] = RunStatus.PARTIAL.value
     return summary

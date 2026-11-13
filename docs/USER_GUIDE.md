@@ -127,6 +127,7 @@ The **Data** badge in the top bar summarises everything:
 |---|---|
 | **Overview** | Read the market's mood: advancers versus decliners, gainers, losers, most active, unusual volume (2× or more of average), strongest bullish and bearish trends, new signals from the last 7 days, upcoming corporate events, your portfolio and watchlists. |
 | **Market Scanner** | Filter all instruments by price, volume, relative volume, change, RSI, trend, volatility, dividend yield, the three scores and trading frequency. Sort any column and save filter sets. An instrument missing a filtered value is excluded, not treated as zero. |
+| **Surge Radar** | Stocks surging *right now* (or set up for a breakout), each with a Surge Sheet: your position cost, break-even, what happened after similar past surges in KES, stop, liquidity and data-quality flags. Flagged stocks are added automatically to **Surge Watch (auto)** and you get a notification. See section 6.6. |
 | **Opportunities** | See every active signal with its evidence, invalidation level, risk factors and historical base rates. Click a row for the full detail (section 6). |
 | **Trends** | See each instrument's trend on daily, weekly and monthly timeframes side by side. Expand **Evidence** to see why it was classified that way. |
 | **Instruments** | Browse the catalogue. Open any symbol for the full research page: chart (D/W/M, adjusted or raw, moving averages, Bollinger bands, support/resistance), multi-timeframe trend, all indicators, the three score breakdowns, performance, risk, liquidity, fundamentals, dividends, events, news, signal history and data coverage. |
@@ -211,6 +212,39 @@ In order of decreasing strength:
 *Insufficient data* means there are fewer than 60 bars. Expand **Evidence** to see the moving-average structure, slopes, RSI, MACD, swing structure, trend strength (ADX) and a liquidity warning.
 
 **Timeframes disagree on purpose.** A stock can be bullish on daily bars while bearish on weekly bars, which usually means a short rally inside a longer decline.
+
+### 6.6 Surge Radar and the Surge Sheet
+
+**What it detects**
+
+| Signal | Rule | When it fires |
+|---|---|---|
+| **Intraday surge** | Delayed quote at least 8% above the last close, with session volume already at least 3× the 20-day average | During the session, at each 15-minute quote poll (about 15–30 minutes after the move, because the data is delayed) |
+| **Price & volume surge** | Close at least 8% up, volume at least 3× average, and a move of at least 2.5 standard deviations for *this* stock | At the 16:30 end-of-day run |
+| **Pre-breakout squeeze** | Tightest price range of the last 120 bars, volume building, price within 3% of its 20-day high | At the 16:30 run; a *setup*, not a move yet |
+
+Each new flag adds the stock to **Surge Watch (auto)**, with the stop as the watchlist stop level, and sends you a notification.
+
+**What it cannot do:** no system can see a spike before it starts. Olympia Capital (OCH) on 28 Oct 2026 is a good example:
+- The day before was quieter than usual.
+- On the day it closed +273% on about 40× normal volume (its reported high of 150 is almost certainly a bad print).
+- It then fell about 10% a day; buying at the 28 Oct close would have lost about 56% by 6 Nov.
+
+The radar would have flagged it intraday on 28 Oct. The Surge Sheet exists to show you that, after surges, collapses are about as common as continuations.
+
+**Reading the Surge Sheet**
+1. **Your position.** Enter a budget or a share count. The sheet shows the cost, the fees (about 2.08%) and the **break-even** price, about +4.2% above entry once both sides' fees are paid.
+2. **What happened after similar surges.** The bad, weak, typical, good and great scenarios are the 10th, 25th, 50th, 75th and 90th percentiles of past outcomes, converted into **your net KES profit or loss after fees**, for holding 1, 5, 10 or 20 sessions. Check **n** (under 30 means anecdotal) and **Profitable after costs**.
+3. **If the current trend continued.** This is a hypothetical (capped at the NSE's roughly 10% daily limit), shown together with how often past surges actually did that. It is usually rare.
+4. **Exit if wrong.** The stop is the pre-surge close, meaning the surge fully reversed, and the sheet shows your loss if it's hit. Gaps can make the loss larger.
+5. **Can you actually trade it?** This shows how many sessions it would take to buy and sell your size at 10% of daily volume. Thin NSE stocks can trap you.
+6. **Before you act.** A checklist, plus data-quality flags (for example a suspected bad print).
+
+**A sensible way to use it:** treat a surge as a prompt to *investigate*, not to buy.
+- Look for the cause (News & Events).
+- Prefer surges with news, adequate liquidity, and a *Typical* scenario that clears break-even.
+- If you act, size the position so the stop loses at most 1–2% of your capital, and decide the take-profit before you enter.
+- Chasing a stock already 20–30% up is where most of the losses in the Olympia example came from.
 
 ---
 

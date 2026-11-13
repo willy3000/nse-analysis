@@ -113,7 +113,7 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid gap-3 lg:grid-cols-3">
-        <Panel title="New opportunities (7 days)" bodyClassName="p-0" actions={<Link href="/opportunities" className="text-2xs text-accent">All</Link>}>
+        <Panel title="New opportunities (7 days)" bodyClassName="p-0" actions={<><Link href="/surges" className="text-2xs text-accent">Surge Radar</Link><Link href="/opportunities" className="text-2xs text-accent">All</Link></>}>
           {o.new_opportunities.length === 0 ? <Empty title="No new signals" /> : (
             <Table><tbody>
               {o.new_opportunities.map((s) => (

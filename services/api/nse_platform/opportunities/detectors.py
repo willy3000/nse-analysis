@@ -22,7 +22,7 @@ import pandas as pd
 
 from nse_platform.models.enums import SignalCategory, SignalDirection
 
-SIGNAL_CALC_VERSION = "sig-1.0.0"
+SIGNAL_CALC_VERSION = "sig-1.1.0"  # 1.1: surge detectors, bad-print exclusion, 1-bar outcomes
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,10 @@ def features(bars: pd.DataFrame, ind: pd.DataFrame) -> pd.DataFrame:
     f["last_swing_low"] = f["swing_low_price"].ffill()
     f["gap"] = f["open"] / f["close"].shift(1) - 1
     f["ret_1"] = f["close"] / f["close"].shift(1) - 1
+    f["prev_close"] = f["close"].shift(1)
+    # Size of today's move in units of recent daily volatility (how unusual it is for *this* stock).
+    daily_vol = f["close"].pct_change().shift(1).rolling(60, min_periods=40).std()
+    f["move_z"] = f["ret_1"] / daily_vol.where(daily_vol > 0)
     _divergence_columns(f)
     return f
 
@@ -206,6 +210,30 @@ TECHNICAL: tuple[Detector, ...] = (
         & (f.close.shift(10) > f.last_swing_low * 1.05),
         lambda r: [ev("Support (last swing low)", r.last_swing_low), ev("Close", r.close)],
         lambda r: below(r.last_swing_low * 0.98 if pd.notna(r.last_swing_low) else None, "2% under support"),
+    ),
+    # ----------------------------------------------------------------- surges (see opportunities/surge.py)
+    Detector(
+        "PRICE_VOLUME_SURGE", SignalCategory.MOMENTUM, SignalDirection.BULLISH, "Price & volume surge",
+        "Close at least 8% above the previous close on at least 3x average volume, and at least 2.5 standard "
+        "deviations larger than this stock's usual daily move. Flags a surge as it happens - not a forecast.",
+        10, 5,
+        lambda f: (f.ret_1 >= 0.08) & (f.rel_volume >= 3) & ((f.move_z >= 2.5) | f.move_z.isna()),
+        lambda r: [ev("Move vs previous close", r.ret_1), ev("Volume vs 20-day average", r.rel_volume),
+                   ev("Move in standard deviations", r.move_z, "vs the previous 60 sessions"),
+                   ev("Previous close", r.prev_close)],
+        lambda r: below(r.prev_close, "the pre-surge close (surge fully reversed)"),
+    ),
+    Detector(
+        "PRE_BREAKOUT_SQUEEZE", SignalCategory.BREAKOUT, SignalDirection.BULLISH, "Pre-breakout squeeze",
+        "Price range in the tightest 15% of the last 120 bars, volume building (10-bar average >= 1.3x) and price "
+        "within 3% of its 20-bar closing high: conditions that often come before breakouts. Not a breakout yet.",
+        10, 10,
+        lambda f: (f.bb_width_pctile_120 <= 0.15) & (f.rel_vol_avg_10 >= 1.3)
+        & (f.close >= f.close_high_20_prior * 0.97) & (f.close <= f.close_high_20_prior * 1.005),
+        lambda r: [ev("Band-width percentile (120 bars)", r.bb_width_pctile_120),
+                   ev("Avg relative volume (10 bars)", r.rel_vol_avg_10),
+                   ev("20-bar closing high", r.close_high_20_prior), ev("Close", r.close)],
+        lambda r: below(r.close_low_20_prior, "the 20-bar closing low"),
     ),
     # ----------------------------------------------------------------- risk alerts
     Detector(

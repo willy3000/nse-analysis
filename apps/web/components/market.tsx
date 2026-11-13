@@ -130,7 +130,7 @@ export function BaseRateTable({ rates }: { rates: BaseRate[] | undefined }) {
       <table className="w-full text-2xs">
         <thead className="text-muted">
           <tr><th className="text-left font-medium">Horizon</th><th className="text-right font-medium">n</th>
-            <th className="text-right font-medium">Mean</th><th className="text-right font-medium">Baseline</th>
+            <th className="text-right font-medium">Median</th><th className="text-right font-medium">Mean</th><th className="text-right font-medium">Baseline</th>
             <th className="text-right font-medium">Hit rate</th></tr>
         </thead>
         <tbody>
@@ -138,6 +138,7 @@ export function BaseRateTable({ rates }: { rates: BaseRate[] | undefined }) {
             <tr key={r.horizon_bars} className={cn(!r.sufficient_sample && "opacity-50")}>
               <td>{r.horizon_bars} bars</td>
               <td className="num text-right">{r.n}</td>
+              <td className={cn("num text-right", toneClass(r.median_return))}>{pct(r.median_return, 1)}</td>
               <td className={cn("num text-right", toneClass(r.mean_return))}>{pct(r.mean_return, 1)}</td>
               <td className="num text-right text-muted">{pct(r.baseline_mean_return, 1)}</td>
               <td className="num text-right">{pct(r.hit_rate, 0, false)}</td>

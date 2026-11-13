@@ -55,9 +55,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def database() -> str:
     assert TEST_URL
     import sqlalchemy as sa
+    from alembic.config import Config
 
     from alembic import command
-    from alembic.config import Config
 
     eng = sa.create_engine(TEST_URL, isolation_level="AUTOCOMMIT")
     with eng.connect() as c:

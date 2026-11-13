@@ -1,36 +1,58 @@
-# PROJECT_STATUS
+# PROJECT_STATUS: final verification report
 
-_Last updated: 2026-11-07. Phase: 4–8 implemented. Phase 9 (production hardening/deployment) outstanding._
+_Updated 2026-11-13. All phases implemented. Deployment configs are written but not yet run on a Docker host._
 
-## Run locally
+## Run it
 ```bash
-bash scripts/dev.sh          # Postgres (embedded) + migrations + API :8000 + worker + web :3000
-# open http://localhost:3000, create an account (local only)
+bash scripts/dev.sh          # embedded Postgres + migrations + API :8000 + worker + web :3000
+bash scripts/dev.sh stop
 ```
-Secrets live in `.env` at the repo root (git-ignored): `MYSTOCKS_API_KEY`, `MYSTOCKS_ENV=sandbox`, `DATABASE_URL`.
+Or `docker compose up --build` (see [operations](docs/deployment/operations.md)). User guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
-## Data
-| Provider | Status | Latency |
-|---|---|---|
-| MyStocks Africa (sandbox key) | **Connected**: 65 NSE instruments (2 ETFs, 3 REITs), daily history from Jun 2016 | 15-min **DELAYED** / **END_OF_DAY**, never live |
-| NSE direct / ICE | Not connected: commercial licence required (see docs/data-sources/provider-research.md) | — |
-| CSV import | Implemented (`nse-cli import-csv prices|financials|corporate-actions|index`) | EOD |
-| Synthetic | Dev only, `ZZ*` symbols, always labelled | Historical |
+## Data actually connected
+| Provider | Status | Latency | Coverage |
+|---|---|---|---|
+| MyStocks Africa (sandbox key) | **Connected, verified live** | 15-min **DELAYED** intraday / **END_OF_DAY** after close; never LIVE | 65 NSE securities (60 equities, 2 ETFs, 3 REITs); daily bars Jun 2016 → latest session (~120k bars, 99.6% with OHLC) |
+| CSV import (licensed NSE files, statements) | Implemented and tested | EOD | Nothing imported yet |
+| NSE direct / ICE | Not connected | — | Commercial licence required |
+| Synthetic (`ZZ*`) | Dev/demo only, labelled | Historical | 17 fictitious instruments incl. the `ZZSURGE` Surge Radar demo |
 
-Not available from MyStocks: financial statements, NSE index values (NASI/NSE 20), bonds, and (in the sandbox) dividends. Fundamentals beyond provider market cap therefore show as **unavailable** until statements are imported.
+Not available from MyStocks: financial statements, NSE index values, bond prices, and (in the sandbox) dividends. These are shown as *unavailable*, never as zero.
 
-## Implemented and tested
-- Schema + migrations (0001–0003), provenance, quality status, calc versions, bar revision history
-- Provider adapters (MyStocks verified against live sandbox), validation, idempotent ingestion, health ledger
-- Indicators validated vs StockCharts and `ta`; look-ahead tests; trends (D/W/M); S/R; 17 detectors + outcome tracking and base rates; 3 versioned scores + walk-forward calibration
-- Backtester (NSE fees ≈2.08%/side, slippage, liquidity, corporate actions, IS/VAL/OOS), paper portfolio, watchlists, alerts, notifications
-- FastAPI `/api/v1` (sessions, CSRF, rate limiting, user isolation); APScheduler worker
-- Next.js frontend, all 13 sections
-- Tests: backend 61 passed (pytest, real Postgres); frontend 17 passed (vitest); `next build` OK
+## Features
+**Fully implemented and tested**
+- **Ingestion:** validation, idempotent upserts, revision archive, provider health, job ledger, holiday calendar.
+- **Indicators:** SMA/EMA/RSI/MACD/ROC/Bollinger/ATR/ADX/HV/OBV/relative volume/swings. Validated against StockCharts and the `ta` library, with look-ahead tests.
+- **Analysis:** multi-timeframe trend classification with evidence, and support/resistance.
+- **Opportunities:** 19 technical detectors plus fundamental, dividend and event signals; lifecycle, outcomes (1/5/10/20/60 bars) and base rates against a baseline.
+- **Surge Radar:** intraday (each quote poll) and end-of-day surge detection, pre-breakout squeeze, auto **Surge Watch (auto)** watchlist, notifications, and the **Surge Sheet** (position cost, break-even, historical scenarios in KES after fees, trend-continuation hypothetical with its historical frequency, stop, liquidity, data-quality flags).
+- **Scores:** three explainable, versioned scores; walk-forward calibration (real data: no predictive value, shown in the app).
+- **Backtester:** NSE fees (~2.08% per side), slippage, liquidity cap, corporate actions, dividends net of WHT, in-sample/validation/out-of-sample segments, reproducibility fingerprint, CSV report.
+- **Investment management:** paper portfolio (average cost, P&L, allocation, concentration, time-weighted return vs benchmark), watchlists, alerts (12 rule types, edge-triggered, deduped).
+- **Security:** Argon2id, hashed sessions, CSRF, rate limits, lockout, audit log, user isolation (tested), security headers.
+- **Frontend:** 14 sections with freshness badges on every price.
 
-## Outstanding
-- Dockerfiles / docker-compose / GitHub Actions CI (Docker not installed on the dev machine)
-- Playwright end-to-end tests; email notification channel
-- Full docs set (architecture overview, schema.md, API, ops/backup); TASKS.md
-- Clean pre-2026 `market_sessions` rows from the first real sync: `DELETE FROM market_sessions WHERE session_date < '2026-01-01' AND source_provider_id = (SELECT id FROM data_providers WHERE code = 'mystocks');`
-- Production: MyStocks KYB + Partner Agreement; review the NSE redistribution licence before any multi-user hosting
+**Implemented, awaiting external data:** fundamentals-based metrics, value signals and the Investment Quality Score (need statements); index benchmarks (need index files).
+
+**Partially implemented:** notifications are in-app only (no email channel); deployment is written but not executed.
+
+**Not implemented:** Playwright end-to-end tests, admin UI, MFA and password reset.
+
+## Verification (2026-11-13)
+| Check | Result |
+|---|---|
+| Backend tests (pytest, real PostgreSQL 16) | 65 passed |
+| Frontend unit tests (vitest) | 17 passed |
+| TypeScript / `next build` | clean / success |
+| `npm audit --omit=dev` | 0 vulnerabilities (Next 15.5.29, patched postcss/sharp) |
+| `pip-audit` | runtime deps clean; only finding is `filelock` in the dev venv (used by pip-audit itself, not by the platform) |
+| Backup → restore into a scratch DB | identical row counts |
+| Live MyStocks sandbox | all data endpoints 200; payload differences from the spec handled and regression-tested |
+
+## External actions required (owner)
+1. MyStocks production KYB + Partner Agreement for a production key.
+2. Review the NSE distribution-licence terms before hosting for anyone other than yourself (`dataservices@nse.co.ke`).
+3. Choose hosting; install Docker (or use a VPS) to run `docker compose`.
+4. Optionally import financial statements and index history (docs/data-sources/csv-import.md).
+
+Open tasks: [TASKS.md](TASKS.md).

@@ -4,6 +4,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from nse_platform.analytics.indicators import compute_all
 from nse_platform.analytics.series import AdjustmentEvent, apply_adjustments, resample
@@ -80,3 +81,27 @@ def test_oversold_recovery_fires_on_cross():
         pos = f.index.get_loc(h.ts)
         assert f["rsi_14"].iloc[pos] > 30 >= f["rsi_14"].iloc[pos - 1]
         assert h.detector.invalidation(h.row)["price"] is not None
+
+
+def test_surge_detector_needs_both_price_and_volume():
+    rng = np.random.default_rng(5)
+    close = 10 * np.exp(np.cumsum(rng.normal(0, 0.01, 200)))
+    df = frame(close)
+    df.iloc[-1, df.columns.get_loc("close")] = close[-2] * 1.10   # +10% day
+    quiet = features(df, compute_all(df))
+    assert not [d for d in detect(quiet, only_last=True) if d.detector.signal_type == "PRICE_VOLUME_SURGE"]
+    df.iloc[-1, df.columns.get_loc("volume")] = 5000.0            # 5x the 1000 average volume
+    loud = features(df, compute_all(df))
+    hits = [d for d in detect(loud, only_last=True) if d.detector.signal_type == "PRICE_VOLUME_SURGE"]
+    assert hits and hits[0].detector.invalidation(hits[0].row)["price"] == pytest.approx(close[-2], abs=1e-3)  # stored rounded to 4 dp
+
+
+def test_bad_prints_excluded_but_genuine_jumps_kept():
+    from nse_platform.analytics.series import exclude_bad_prints
+
+    unit_error = frame(np.array([2.2, 2.21, 2.19, 2.2, 220.0, 2.22, 2.2, 2.21, 2.23, 2.2]))
+    out = exclude_bad_prints(unit_error)
+    assert len(out) == 9 and out["close"].max() < 3
+    # Olympia-like genuine re-rating: 7.5 -> 28 then decaying - kept.
+    genuine = frame(np.array([7.4, 7.5, 7.6, 7.5, 28.0, 19.4, 17.5, 15.0, 13.5, 12.2]))
+    assert len(exclude_bad_prints(genuine)) == 10

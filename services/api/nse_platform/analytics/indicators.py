@@ -29,7 +29,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-INDICATOR_CALC_VERSION = "ind-1.0.0"
+INDICATOR_CALC_VERSION = "ind-1.1.0"  # 1.1: bad-print exclusion in series loading
 PERIODS_PER_YEAR = {"1d": 252, "1w": 52, "1mo": 12, "1h": 252 * 6, "15m": 252 * 24}
 
 

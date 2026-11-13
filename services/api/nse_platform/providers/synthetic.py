@@ -62,6 +62,9 @@ class SynthSpec:
     suspended_from: date | None = None  # currently suspended since
     gap: tuple[date, date] | None = None  # historical suspension window
     bonus: tuple[date, float, float] | None = None  # (ex_date, ratio_from, ratio_to)
+    # Surge events: (sessions before the last session, day return, annual drift for the next 10 sessions).
+    # Offset 0 = the latest session, so the demo always shows a fresh surge.
+    surges: tuple[tuple[int, float, float], ...] = ()
 
 
 SPECS: tuple[SynthSpec, ...] = (
@@ -97,6 +100,11 @@ SPECS: tuple[SynthSpec, ...] = (
               -0.03, 0.20, 0.50, 20_000, dividend=0.065, shares_out=1.8e8, margin=0.40),
     SynthSpec("ZZETF", "Dhahabu Gold ETF (Synthetic)", "Exchange Traded Fund", SecurityType.ETF, 2500, 0.07, 0.16,
               0.45, 500, shares_out=4e5, margin=0.0),
+    SynthSpec("ZZSURGE", "Kipepeo Surge Holdings (Synthetic)", "Investment", SecurityType.EQUITY, 6.0, 0.0, 0.30,
+              0.70, 20_000, shares_out=4.0e8, margin=0.08,
+              # Mix of surges that kept running and surges that collapsed, like real NSE small caps.
+              surges=((2300, 0.10, 2.0), (1900, 0.095, -3.0), (1500, 0.10, 3.0), (1150, 0.09, -2.5),
+                      (800, 0.10, 1.5), (520, 0.10, -4.0), (300, 0.095, 2.5), (90, 0.10, -3.5), (0, 0.10, 0.0))),
     SynthSpec("ZZSUG", "Nzoia Sugar Millers (Synthetic)", "Manufacturing & Allied", SecurityType.EQUITY, 4, 0.12,
               0.50, 0.65, 70_000, shares_out=1.2e9, margin=0.02),
 )
@@ -172,6 +180,14 @@ def _simulate(symbol: str, seed: int, end: date) -> tuple[tuple[tuple, ...], dic
     rows = []
     div_days = _dividend_schedule(spec, end)
     paid: dict[date, float] = {}
+    surge_at = {}
+    surge_until: dict[int, tuple[int, float]] = {}
+    if spec.surges:
+        live_days = [d for d in days if not (spec.gap and spec.gap[0] <= d <= spec.gap[1])]
+        for off, jump, post in spec.surges:
+            if off < len(live_days):
+                surge_at[live_days[len(live_days) - 1 - off]] = (jump, post)
+    post_days, post_drift = 0, 0.0
     for d in days:
         if spec.gap and spec.gap[0] <= d <= spec.gap[1]:
             continue  # suspended: no bars at all
@@ -189,6 +205,18 @@ def _simulate(symbol: str, seed: int, end: date) -> tuple[tuple[tuple, ...], dic
             if amt > 0:
                 paid[d] = amt
                 prev_close = prev_close - amt
+        if d in surge_at:
+            jump, post_drift = surge_at[d]
+            post_days = 10
+            close = round(prev_close * (1 + jump), 2)
+            hi = round(close * 1.01, 2)
+            rows.append((d, round(prev_close * 1.01, 2), hi, round(prev_close, 2), close,
+                         int(spec.avg_volume * rng.uniform(8, 15) / 100) * 100))
+            price = close
+            continue
+        if post_days > 0:
+            post_days -= 1
+            ret += post_drift * dt + spec.vol * np.sqrt(dt) * rng.normal(0, 0.5)
         traded = rng.random() < spec.liquidity
         if not traded:
             close = round(prev_close, 2)

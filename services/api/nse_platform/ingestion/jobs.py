@@ -212,11 +212,16 @@ async def poll_quotes(providers: dict[str, MarketDataProvider]) -> list[dict[str
         for nf in batch.not_found:
             issues.append(store.Issue("QUOTE_NOT_FOUND", "info", nf, None))
         run.rows_written = store.store_quotes(s, prow, items, run)
+        from nse_platform.opportunities.surge import auto_watch, intraday_check
+
+        surges = intraday_check(s, prow.id)
+        if surges:
+            auto_watch(s, datetime.now(timezone.utc) - timedelta(minutes=30))
         store.record_issues(s, issues, prow, run, sym_map)
         run.items_succeeded = len(items)
         run.items_failed = len(batch.not_found)
         run.details = {"latest_market_ts": latest.isoformat() if latest else None,
-                       "not_found": batch.not_found[:50]}
+                       "not_found": batch.not_found[:50], "intraday_surges": surges}
 
     return await _run_job("poll_quotes", providers, body)
 

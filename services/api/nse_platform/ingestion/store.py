@@ -274,8 +274,9 @@ def store_quotes(session: Session, provider: DataProvider, items: list[tuple[int
     if not rows:
         return 0
     # Same exchange observation re-polled -> no new row (observations are immutable).
-    res = session.execute(insert(Quote).values(rows).on_conflict_do_nothing())
-    return res.rowcount or 0
+    # RETURNING gives an exact count (multi-row INSERT .. ON CONFLICT reports rowcount -1 under psycopg).
+    res = session.execute(insert(Quote).values(rows).on_conflict_do_nothing().returning(Quote.instrument_id))
+    return len(res.fetchall())
 
 
 # --------------------------------------------------------------------------- corporate / news / calendar

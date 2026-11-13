@@ -35,6 +35,33 @@ class AdjustmentEvent:
     description: str = ""
 
 
+BAD_PRINT_RATIO = 3.0
+
+
+def exclude_bad_prints(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
+    """Drop bars whose close is > 3x away from the median close of up to `window` sessions on each side.
+
+    The provider's history contains isolated unit errors (e.g. 2.20 reported as 220.00 for a day). Such bars
+    were never tradeable, so they are excluded from analytics, base rates and backtests. Raw bars stay stored
+    (quality SUSPECT). Uses neighbouring bars on both sides, so the most recent bar - which has no later
+    neighbours - is judged only against earlier ones (window still requires 3 neighbours).
+    """
+    if len(df) < 7:
+        return df
+    c = df["close"].to_numpy(dtype=float)
+    keep = np.ones(len(c), dtype=bool)
+    for i in range(len(c)):
+        lo, hi = max(0, i - window), min(len(c), i + window + 1)
+        neigh = np.concatenate([c[lo:i], c[i + 1:hi]])
+        neigh = neigh[np.isfinite(neigh)]
+        if len(neigh) < 3:
+            continue
+        med = float(np.median(neigh))
+        if med > 0 and (c[i] / med > BAD_PRINT_RATIO or c[i] / med < 1 / BAD_PRINT_RATIO):
+            keep[i] = False
+    return df[keep]
+
+
 def load_daily(session: Session, instrument: Instrument, provider_id: int | None = None) -> pd.DataFrame:
     pid = provider_id or instrument.primary_provider_id
     rows = session.execute(
@@ -43,7 +70,7 @@ def load_daily(session: Session, instrument: Instrument, provider_id: int | None
         .where(PriceBar.instrument_id == instrument.id, PriceBar.provider_id == pid, PriceBar.timeframe == "1d")
         .order_by(PriceBar.ts)
     ).all()
-    return frame_from_rows(rows)
+    return exclude_bad_prints(frame_from_rows(rows))
 
 
 def frame_from_rows(rows: list) -> pd.DataFrame:

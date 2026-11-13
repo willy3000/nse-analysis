@@ -15,7 +15,7 @@ from nse_platform.models import AnalyticsReport, Instrument, OpportunityOutcome,
 from nse_platform.models.enums import SignalCategory, SignalDirection, SignalStatus
 from nse_platform.opportunities.detectors import SIGNAL_CALC_VERSION, Detection, detect, features, risk_factors
 
-HORIZONS = (5, 10, 20, 60)
+HORIZONS = (1, 5, 10, 20, 60)
 MIN_SAMPLE = 30
 DAYS_PER_BAR = {"1d": 7 / 5, "1w": 7.0, "1mo": 30.5}  # calendar days per bar (5 sessions per week)
 
