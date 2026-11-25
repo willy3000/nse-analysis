@@ -8,9 +8,11 @@ COPY services/api/nse_platform ./nse_platform
 RUN pip install --upgrade pip && pip install .
 COPY services/api/alembic.ini ./
 COPY services/api/alembic ./alembic
+COPY services/api/docker-entrypoint.sh ./
+RUN chmod +x ./docker-entrypoint.sh
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live').status==200 else 1)"
-# Default: API. Worker: `python -m nse_platform.worker.main`. Migrations: `python -m alembic upgrade head`.
-CMD ["/bin/sh", "-c", "python -m alembic upgrade head && exec python -m uvicorn nse_platform.main:app --host 0.0.0.0 --port ${PORT:-10000} --proxy-headers --forwarded-allow-ips=*"]
+# Default: API with auto-data-load. Worker: `python -m nse_platform.worker.main`. Migrations: `python -m alembic upgrade head`.
+CMD ["./docker-entrypoint.sh"]
