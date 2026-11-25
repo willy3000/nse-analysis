@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     market_timezone: str = "Africa/Nairobi"
     quote_poll_minutes: int = 15
     backtest_poll_seconds: int = 5
+    # First-run data load, shortly after start-up, on the scheduler thread. Needs RUN_SCHEDULER_IN_API (or a
+    # worker process) to have somewhere to run. It skips itself once real price bars exist.
+    bootstrap_on_start: bool = False
+    bootstrap_backfill_years: int = 3
 
     @model_validator(mode="after")
     def _production_guards(self) -> Settings:

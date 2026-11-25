@@ -25,6 +25,22 @@ API process.
 - Confirm it is live at `GET /health/ready` -> `checks.scheduler`, which lists each job's next run time.
 - Do not also run `nse-worker` unless you want the redundancy; locks make it safe either way.
 
+### Loading data on a host with no shell access
+`BOOTSTRAP_ON_START=true` runs the first data load — instruments, history, corporate actions, analytics — on
+the scheduler thread about 30 seconds after start-up. It needs `RUN_SCHEDULER_IN_API=true` (or a worker) to
+have somewhere to run, and `MYSTOCKS_API_KEY` to have anything to fetch.
+
+- It deliberately does **not** run in the container's start command. A host that waits for the port to be
+  bound (Render does) fails the deploy if a multi-year backfill runs before the web server starts.
+- It skips itself once any non-synthetic price bar exists, so redeploys do not reload everything. To force a
+  reload, clear `price_bars` first.
+- `BOOTSTRAP_BACKFILL_YEARS` (default 3) bounds the history. The longest indicator lookback is ~120
+  sessions, so 3 years is ample; 10 years is a much larger download and will not fit free-tier storage.
+- Each step is logged and guarded: one failing step does not stop the others. Watch progress at
+  `GET /api/v1/data/runs`, and the result at `GET /api/v1/data/health`.
+- It holds the single job thread while it runs, so the first quote poll may be skipped. The schedule resumes
+  normally afterwards.
+
 ### Keeping a free-tier instance awake
 Hosts that sleep idle instances stop the schedule while asleep. `SELF_PING_MINUTES` (default 10) makes the
 app request its own `/health/live` on that interval, which returns a static response and touches neither

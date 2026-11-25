@@ -22,6 +22,10 @@ def get_engine() -> Engine:
         max_overflow=s.db_max_overflow,
         pool_pre_ping=True,
         pool_recycle=1800,
+        # A job holds its advisory-lock connection open but idle for its whole run, which is minutes of
+        # provider HTTP calls. Managed networks drop an idle socket, and the closing unlock then fails.
+        # pool_pre_ping cannot help: it only validates on checkout, not a connection already held.
+        connect_args={"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5},
         future=True,
     )
 
