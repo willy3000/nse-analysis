@@ -92,6 +92,26 @@ setting; set it false to load the data yourself instead.
 - It holds the single job thread while it runs, so the first quote poll may be skipped. The schedule resumes
   normally afterwards.
 
+### Finishing a load on a database that restarts
+A small managed Postgres can restart every few minutes under load (a 256 MB Render instance running this
+analytics workload was observed restarting every 7-11 minutes, with `shared_buffers` at 64 MB). An
+all-or-nothing backfill cannot finish in that window, so the loader is built to make partial progress and
+resume:
+
+- **`catchup`** (every `CATCHUP_POLL_MINUTES`, default 15) asks which instruments still have no price bars
+  and which have bars but no 1d analytics snapshot, and loads only those. Passes never redo completed work,
+  so the gap shrinks monotonically. Once the universe is complete it is one cheap query.
+- `ingest_history` recovers **per instrument**: a dropped connection waits for the server to return and
+  then continues with the next instrument, instead of aborting the job. Previously one restart ended the
+  pass and every instrument after it was never fetched - 66 instruments synced, 2 loaded.
+- `GET /api/v1/data/gaps` shows exactly what is missing. Overview inner-joins `instrument_snapshots`, so an
+  instrument without a snapshot does not appear there at all, however many bars it has.
+- `POST /api/v1/admin/data/catchup` (admin) runs a pass now instead of waiting for the schedule. It returns
+  immediately and takes the same advisory lock, so it cannot duplicate a scheduled run.
+
+If restarts are frequent, the real fix is a larger database plan: the loader now survives them, but every
+restart still costs an in-flight instrument and a few seconds of waiting.
+
 ### Keeping a free-tier instance awake
 Hosts that sleep idle instances stop the schedule while asleep. `SELF_PING_MINUTES` (default 10) makes the
 app request its own `/health/live` on that interval, which returns a static response and touches neither

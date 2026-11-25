@@ -120,19 +120,21 @@ def _settings(**kw: object) -> Settings:
 
 class TestBootstrapThreadSurvivesFailure:
     def test_a_failing_gap_check_does_not_kill_the_thread_or_the_load(self, db_up, monkeypatch):
-        """The bug: _bootstrap_gaps raised, the one-shot thread died, and no data was ever loaded."""
+        """The bug: the gap check raised, the one-shot thread died, and no data was ever loaded."""
         monkeypatch.setattr(wjobs, "get_settings", lambda: _settings(bootstrap_max_attempts=3))
         monkeypatch.setattr(wjobs.time, "sleep", lambda _s: None)
         calls: list[str] = []
         gaps = iter([_dns_failure(), _dns_failure(), None])
 
-        def flaky_gaps() -> tuple[bool, bool]:
+        def flaky_gaps() -> dict:
             exc = next(gaps)
             if exc is not None:
                 raise exc
-            return (False, False)  # by now another replica loaded the data
+            # By now the data is in (another replica, or an earlier pass).
+            return {"instruments": ["A"], "missing_bars": [], "missing_bars_provider_symbols": [],
+                    "missing_snapshot_ids": []}
 
-        monkeypatch.setattr(wjobs, "_bootstrap_gaps", flaky_gaps)
+        monkeypatch.setattr(wjobs, "data_gaps", flaky_gaps)
         monkeypatch.setattr(wjobs, "_providers", lambda: calls.append("providers") or {})
 
         wjobs.bootstrap_thread_target()  # must not raise, and must keep trying
@@ -142,7 +144,7 @@ class TestBootstrapThreadSurvivesFailure:
         """Start-up is exactly when a managed database is least likely to answer."""
         monkeypatch.setattr(wjobs, "get_settings", lambda: _settings(db_ready_timeout_seconds=0))
         touched: list[str] = []
-        monkeypatch.setattr(wjobs, "_bootstrap_gaps", lambda: touched.append("gaps") or (True, True))
+        monkeypatch.setattr(wjobs, "data_gaps", lambda: touched.append("gaps") or {})
         wjobs.bootstrap_thread_target()
         assert touched == []  # never attempted against a database known to be unreachable
 
@@ -163,7 +165,7 @@ class TestBootstrapThreadSurvivesFailure:
         """
         monkeypatch.setattr(wjobs, "get_settings", lambda: _settings(mystocks_api_key=key))
         probed: list[str] = []
-        monkeypatch.setattr(wjobs, "_bootstrap_gaps", lambda: probed.append("gaps") or (True, True))
+        monkeypatch.setattr(wjobs, "data_gaps", lambda: probed.append("gaps") or {})
         slept: list[float] = []
         monkeypatch.setattr(wjobs.time, "sleep", slept.append)
         wjobs.bootstrap_thread_target()

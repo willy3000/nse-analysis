@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, cn, Select, Spinner } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useApi, useDataUpdates, useMe, useUniverse } from "@/lib/hooks";
+import { applyTheme, readStoredTheme, type Theme } from "@/lib/theme";
 import type { DataHealth } from "@/lib/types";
 
 export const NAV = [
@@ -34,13 +35,14 @@ export const NAV = [
 interface Status { is_open: boolean; reason: string; local_time: string; last_completed_session: string }
 interface Universes { default: "real" | "synthetic"; real_instruments: number; synthetic_instruments: number }
 
-function useTheme(): [string, () => void] {
-  const [theme, setTheme] = useState("dark");
-  useEffect(() => setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light"), []);
+function useTheme(): [Theme, () => void] {
+  // Starts at the default rather than at "unknown": the pre-paint script has already applied the real
+  // theme, and the effect below corrects the icon on mount if the stored choice was light.
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => setTheme(readStoredTheme()), []);
   const toggle = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    document.documentElement.classList.toggle("dark", next === "dark");
-    try { window.localStorage.setItem("nse.theme", next); } catch { /* ignore */ }
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    applyTheme(next);
     setTheme(next);
   };
   return [theme, toggle];

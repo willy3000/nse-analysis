@@ -28,6 +28,9 @@ from nse_platform.core.config import Settings, get_settings
 
 log = logging.getLogger("nse_platform.worker")
 
+# Jobs whose "database unavailable" skip has already been logged for the current outage.
+_SKIP_LOGGED: set[str] = set()
+
 
 def _providers():  # noqa: ANN202
     from nse_platform.providers.registry import build_providers
@@ -53,8 +56,13 @@ def _db_ready(job: str) -> bool:
     from nse_platform.core.db import db_gate
 
     if db_gate.confirm():
+        _SKIP_LOGGED.discard(job)
         return True
-    log.warning("job_skipped_db_unavailable", extra={"job": job, "error": db_gate.last_error})
+    # One line per job per outage, not one per tick: a 5-second poll through a 10-minute restart would
+    # otherwise write 120 identical lines and bury whatever else happened.
+    if job not in _SKIP_LOGGED:
+        _SKIP_LOGGED.add(job)
+        log.warning("job_skipped_db_unavailable", extra={"job": job, "error": db_gate.last_error})
     return False
 
 
@@ -118,92 +126,157 @@ def job_backtests() -> None:
         log.exception("backtest_queue_error")
 
 
-def _bootstrap_gaps() -> tuple[bool, bool]:
-    """(needs_history, needs_analytics) for the real universe.
+def data_gaps() -> dict[str, list]:
+    """Which real instruments still lack price bars, and which lack an analytics snapshot.
 
-    Checked separately on purpose. A part-finished earlier load can leave bars behind with no analytics, and
-    Overview reads the snapshots, not the bars - so "some bars exist" must not be taken to mean "done".
+    This is what makes the load resumable. The old check was a single "do any bars exist at all?" probe,
+    so once one instrument had bars the loader believed it was finished - which is how a universe of 66
+    instruments ended up with 2 of them loaded and Overview showing one stock. Overview inner-joins
+    instrument_snapshots, so an instrument without a snapshot is invisible there however many bars it has.
     """
     from sqlalchemy import select
 
     from nse_platform.core.db import session_scope, with_db_retry
-    from nse_platform.models import Instrument, InstrumentSnapshot, PriceBar
+    from nse_platform.models import Instrument, InstrumentIdentifier, InstrumentSnapshot, PriceBar
+    from nse_platform.models.enums import SecurityType
 
-    def _probe() -> tuple[bool, bool]:
+    priced = {SecurityType.EQUITY.value, SecurityType.PREFERENCE.value, SecurityType.ETF.value}
+
+    def _probe() -> dict[str, list]:
         with session_scope() as s:
-            bars = s.scalar(select(PriceBar.instrument_id)
-                            .join(Instrument, Instrument.id == PriceBar.instrument_id)
-                            .where(Instrument.is_synthetic.is_(False)).limit(1))
-            snaps = s.scalar(select(InstrumentSnapshot.instrument_id)
-                             .join(Instrument, Instrument.id == InstrumentSnapshot.instrument_id)
-                             .where(Instrument.is_synthetic.is_(False)).limit(1))
-        return bars is None, snaps is None
+            # Both symbols: the platform one ("ABSA") for humans, and the provider one ("ABSA.KE") because
+            # that is what ingest_history filters on. They differ for every instrument here, and matching
+            # them only via its `symbol.split(".")[0]` fallback would break the moment a provider symbol
+            # stopped being the platform symbol plus a suffix - silently loading nothing.
+            targets = s.execute(
+                select(Instrument.id, Instrument.symbol, InstrumentIdentifier.provider_symbol)
+                .join(InstrumentIdentifier, InstrumentIdentifier.instrument_id == Instrument.id)
+                .where(Instrument.is_synthetic.is_(False), Instrument.security_type.in_(priced),
+                       Instrument.primary_provider_id.is_not(None),
+                       InstrumentIdentifier.provider_id == Instrument.primary_provider_id)).all()
+            with_bars = {r[0] for r in s.execute(select(PriceBar.instrument_id).distinct()).all()}
+            with_snaps = {r[0] for r in s.execute(
+                select(InstrumentSnapshot.instrument_id).distinct().where(
+                    InstrumentSnapshot.timeframe == "1d")).all()}
+        missing = [t for t in targets if t[0] not in with_bars]
+        return {
+            "instruments": [t[1] for t in targets],
+            "missing_bars": [t[1] for t in missing],
+            "missing_bars_provider_symbols": [t[2] for t in missing],
+            "missing_snapshot_ids": [t[0] for t in targets if t[0] in with_bars and t[0] not in with_snaps],
+        }
 
-    # Read-only, so it is safe to run again from the start after a dropped connection.
-    return with_db_retry("bootstrap_gaps", _probe)
+    return with_db_retry("data_gaps", _probe)  # read-only, so safe to run again from the start
 
 
-def job_bootstrap() -> bool:
-    """One-off first-run load: instruments, history, corporate actions, then analytics.
+def job_catchup() -> bool:
+    """Fill whatever the universe is still missing. A no-op once every instrument has bars and a snapshot.
 
-    Runs on a background thread just after start-up, never in the container's start command: a host that
-    waits for the port to be bound fails the deploy if a multi-year backfill runs first. Skips itself once
-    real bars exist, so a redeploy does not repeat it. Each step is guarded, so one failure does not stop
-    the rest.
+    Runs on a schedule as well as at start-up, because a managed database that restarts every few minutes
+    cannot be relied on to let any single pass finish. Each pass loads only the instruments that are still
+    missing and uses the stored high-water mark, so passes never redo completed work and the gap shrinks
+    monotonically. Returns True when nothing is left to do.
 
-    Returns True when there is nothing left to do (loaded, or legitimately skipped) and False when it should
-    be tried again - see `bootstrap_thread_target`, which owns the retrying. Never raises: this runs as the
-    only call on a one-shot thread, and an escaping exception killed that thread for the life of the
-    process, so the first-run load never happened at all.
+    Never raises: it is called from the scheduler, from the bootstrap thread and from an admin request, and
+    an escaping exception in any of those is either invisible or kills the caller.
     """
-    from datetime import date
+    try:
+        return _catchup_pass()
+    except Exception:  # noqa: BLE001 - reported with its traceback; the next pass tries again
+        log.exception("catchup_failed")
+        return False
 
+
+def _catchup_pass() -> bool:
     from nse_platform.analytics.pipeline import run_analytics
     from nse_platform.ingestion import jobs
 
     s = get_settings()
-    # A blank value counts as absent. Hosts hand an unset variable through as "", which is not None, so the
-    # load used to start with an unconfigured provider, fetch nothing, and - now that it retries - do it
-    # repeatedly.
-    key = s.mystocks_api_key.get_secret_value().strip() if s.mystocks_api_key is not None else ""
-    if not key:
+    if not _provider_key(s):
+        log.info("catchup_skipped_no_provider_key")
+        return True
+    if not _db_ready("catchup"):
+        return False
+    gaps = data_gaps()
+    if not gaps["instruments"]:
+        log.info("catchup_no_instruments_yet")  # sync_instruments has not run or found nothing
+        _guard("catchup_instruments", lambda: asyncio.run(jobs.sync_instruments(_providers())))
+        return False
+    missing_bars, missing_snaps = gaps["missing_bars"], gaps["missing_snapshot_ids"]
+    if not missing_bars and not missing_snaps:
+        log.info("catchup_complete", extra={"instruments": len(gaps["instruments"])})
+        return True
+    log.info("catchup_started", extra={"instruments": len(gaps["instruments"]),
+                                       "missing_bars": len(missing_bars),
+                                       "missing_snapshots": len(missing_snaps)})
+    provs = _providers()
+    if missing_bars:
+        # `symbols` restricts the pass to what is missing; incremental=True resumes from the stored
+        # high-water mark, so an instrument interrupted half way is continued rather than re-downloaded.
+        want = gaps["missing_bars_provider_symbols"]
+        _guard("catchup_history", lambda: asyncio.run(
+            jobs.ingest_history(provs, symbols=want, incremental=True)))
+        _guard("catchup_corporate", lambda: asyncio.run(jobs.ingest_corporate(provs)))
+    after = data_gaps()
+    need_analytics = after["missing_snapshot_ids"]
+    if need_analytics:
+        _guard("catchup_analytics", lambda: run_analytics(replay=True, instrument_ids=need_analytics))
+    final = data_gaps()
+    remaining = len(final["missing_bars"]) + len(final["missing_snapshot_ids"])
+    if remaining:
+        log.info("catchup_progress", extra={"missing_bars": len(final["missing_bars"]),
+                                            "missing_snapshots": len(final["missing_snapshot_ids"]),
+                                            "was_missing": len(missing_bars) + len(missing_snaps)})
+        return False
+    log.info("catchup_complete", extra={"instruments": len(final["instruments"])})
+    return True
+
+
+def _provider_key(s: Settings) -> str:
+    """The provider key, treating a blank value as absent (hosts pass an unset variable through as "")."""
+    return s.mystocks_api_key.get_secret_value().strip() if s.mystocks_api_key is not None else ""
+
+
+def job_bootstrap() -> bool:
+    """First-run load: instruments, then whatever the universe is still missing.
+
+    Runs on a background thread just after start-up, never in the container's start command: a host that
+    waits for the port to be bound fails the deploy if a multi-year backfill runs first.
+
+    The load itself is `job_catchup`, which works instrument by instrument against the real gap, so this is
+    cheap to repeat and resumes rather than restarts. Returns True when nothing is left to do. Never
+    raises: this runs as the only call on a one-shot thread, and an escaping exception killed that thread
+    for the life of the process, so the first-run load never happened at all.
+    """
+    from nse_platform.ingestion import jobs
+
+    s = get_settings()
+    if not _provider_key(s):
         log.info("bootstrap_skipped_no_provider_key")
         return True
     try:
-        needs_history, needs_analytics = _bootstrap_gaps()
+        gaps = data_gaps()
     except Exception as exc:  # noqa: BLE001 - reported, then retried by the caller
         log.exception("bootstrap_gaps_failed")
         from nse_platform.core.db import is_transient_db_error
 
         # A query or data error will not fix itself on the next attempt; connectivity may.
         return not is_transient_db_error(exc)
-    if not needs_history and not needs_analytics:
-        log.info("bootstrap_skipped_data_present")
+    if gaps["instruments"] and not gaps["missing_bars"] and not gaps["missing_snapshot_ids"]:
+        log.info("bootstrap_skipped_data_present", extra={"instruments": len(gaps["instruments"])})
         return True
-    start = date(date.today().year - s.bootstrap_backfill_years, 1, 1)
-    try:
-        provs = _providers()
-    except Exception:  # noqa: BLE001 - a bad provider configuration is not retryable
-        log.exception("bootstrap_providers_failed")
-        return True
-    log.info("bootstrap_started", extra={"history": needs_history, "analytics": needs_analytics,
-                                         "history_from": start.isoformat()})
-    if needs_history:
+    if not gaps["instruments"]:
+        try:
+            provs = _providers()
+        except Exception:  # noqa: BLE001 - a bad provider configuration is not retryable
+            log.exception("bootstrap_providers_failed")
+            return True
         _guard("bootstrap_instruments", lambda: asyncio.run(jobs.sync_instruments(provs)))
-        _guard("bootstrap_history", lambda: asyncio.run(jobs.ingest_history(provs, start=start, incremental=False)))
-        _guard("bootstrap_corporate", lambda: asyncio.run(jobs.ingest_corporate(provs)))
-    _guard("bootstrap_analytics", lambda: run_analytics(replay=True))
-    log.info("bootstrap_finished")
-    # Each step is individually guarded, so "finished" does not mean "complete". Re-check, and let the
-    # caller try again if the analytics snapshots that Overview reads are still missing.
-    try:
-        still_missing = any(_bootstrap_gaps())
-    except Exception:  # noqa: BLE001 - the load itself ran; do not spin on a failing probe
-        log.exception("bootstrap_verify_failed")
-        return True
-    if still_missing:
-        log.warning("bootstrap_incomplete")
-    return not still_missing
+    log.info("bootstrap_started", extra={"missing_bars": len(gaps["missing_bars"]),
+                                         "missing_snapshots": len(gaps["missing_snapshot_ids"])})
+    done = job_catchup()
+    log.info("bootstrap_finished", extra={"complete": done})
+    return done
 
 
 def bootstrap_thread_target() -> None:
@@ -275,6 +348,10 @@ def register_jobs(sched: BaseScheduler, s: Settings) -> BaseScheduler:
     sched.add_job(job_corporate, CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=tz), id="corporate")
     sched.add_job(job_weekly, CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=tz), id="weekly")
     sched.add_job(job_backtests, IntervalTrigger(seconds=s.backtest_poll_seconds, timezone=tz), id="backtests")
+    # Keeps filling whatever the universe is still missing, and costs one cheap query once it is
+    # complete. On a database that restarts every few minutes, no single pass can be relied on to
+    # finish, so the loader has to be something that runs again rather than a one-off at start-up.
+    sched.add_job(job_catchup, IntervalTrigger(minutes=s.catchup_poll_minutes, timezone=tz), id="catchup")
     if resolve_self_ping_url(s):
         sched.add_job(job_self_ping, IntervalTrigger(minutes=s.self_ping_minutes, timezone=tz),
                       id="self_ping", next_run_time=datetime.now(ZoneInfo(tz)))

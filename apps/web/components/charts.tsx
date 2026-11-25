@@ -9,9 +9,29 @@ import {
   type ISeriesApi,
   type Time,
 } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { readStoredTheme, THEME_EVENT, type Theme } from "@/lib/theme";
 import type { Bar } from "@/lib/types";
+
+/**
+ * The current theme, re-rendering when it changes.
+ *
+ * These charts draw to a canvas, so their colours are read out of the CSS custom properties once, when the
+ * chart is built - a `.dark` class change restyles the rest of the page but cannot touch pixels already
+ * painted. Including this in a chart's effect dependencies rebuilds it against the new palette, so a
+ * toggle no longer leaves charts in the previous theme's colours.
+ */
+function useThemeName(): Theme {
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    setTheme(readStoredTheme());
+    const onChange = () => setTheme(readStoredTheme());
+    window.addEventListener(THEME_EVENT, onChange);
+    return () => window.removeEventListener(THEME_EVENT, onChange);
+  }, []);
+  return theme;
+}
 
 function cssColor(name: string, alpha = 1): string {
   if (typeof window === "undefined") return "#888";
@@ -46,6 +66,7 @@ export interface Level {
 export function PriceChart({ bars, overlays = [], levels = [], height = 380 }: { bars: Bar[]; overlays?: Overlay[];
   levels?: Level[]; height?: number }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useThemeName();
   useEffect(() => {
     if (!ref.current || bars.length === 0) return;
     const chart: IChartApi = createChart(ref.current, baseOptions(height));
@@ -82,13 +103,14 @@ export function PriceChart({ bars, overlays = [], levels = [], height = 380 }: {
     }
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [bars, overlays, levels, height]);
+  }, [bars, overlays, levels, height, theme]);  // `theme`: rebuild so canvas colours follow the toggle
   return <div ref={ref} className="w-full" style={{ height }} aria-label="Price chart" role="img" />;
 }
 
 export function LineChart({ series, height = 260, percent }: { series: { name: string; color: string;
   points: { date: string; value: number | null }[] }[]; height?: number; percent?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useThemeName();
   useEffect(() => {
     if (!ref.current) return;
     const chart = createChart(ref.current, baseOptions(height));
@@ -99,7 +121,7 @@ export function LineChart({ series, height = 260, percent }: { series: { name: s
     }
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [series, height, percent]);
+  }, [series, height, percent, theme]);  // `theme`: rebuild so canvas colours follow the toggle
   return <div ref={ref} className="w-full" style={{ height }} role="img" aria-label="Line chart" />;
 }
 

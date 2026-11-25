@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # managed database is least likely to answer. Retry it rather than leave the deployment empty.
     bootstrap_max_attempts: int = 5
     bootstrap_retry_max_seconds: float = 300.0
+    # How often the catch-up job re-checks for missing data. It is one cheap query once the universe is
+    # complete, and the only thing that finishes a load on a database that restarts mid-pass.
+    catchup_poll_minutes: int = 15
 
     @model_validator(mode="after")
     def _production_guards(self) -> Settings:

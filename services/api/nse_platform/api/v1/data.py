@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
-from nse_platform.api.deps import current_user, get_db, not_found, require_admin
+from nse_platform.api.deps import current_user, current_user_no_session, get_db, not_found, require_admin
 from nse_platform.api.v1.instruments import news_dict
 from nse_platform.core.cache import get_cache
 from nse_platform.core.config import get_settings
@@ -227,7 +227,7 @@ def events(universe: Literal["real", "synthetic"] | None = None, days_back: int 
 
 
 @router.get("/stream/updates")
-async def stream(request: Request, _: User = Depends(current_user)) -> StreamingResponse:
+async def stream(request: Request, _: User = Depends(current_user_no_session)) -> StreamingResponse:
     """Server-Sent Events: emits an event only when a new ingestion/analytics run finishes. Upstream data is
     delayed/EOD, so updates are infrequent by design; nothing is re-broadcast or synthesised."""
 
@@ -255,6 +255,44 @@ async def stream(request: Request, _: User = Depends(current_user)) -> Streaming
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/data/gaps")
+def data_gaps_report(_: User = Depends(current_user)) -> dict[str, Any]:
+    """Exactly which instruments still have no price bars, and which have bars but no analytics snapshot.
+
+    Overview inner-joins instrument_snapshots, so an instrument missing a snapshot does not appear there at
+    all. On a host with no shell this is the only way to see whether a load actually finished.
+    """
+    from nse_platform.worker.jobs import data_gaps
+
+    g = data_gaps()
+    total = len(g["instruments"])
+    missing_bars, missing_snaps = g["missing_bars"], g["missing_snapshot_ids"]
+    return {
+        "instruments": total,
+        "complete": total > 0 and not missing_bars and not missing_snaps,
+        "loaded": total - len(missing_bars) - len(missing_snaps),
+        "missing_bars": {"count": len(missing_bars), "symbols": missing_bars[:200]},
+        "missing_snapshots": {"count": len(missing_snaps), "instrument_ids": missing_snaps[:200]},
+        "note": "Overview shows only instruments that have a 1d analytics snapshot.",
+    }
+
+
+@router.post("/admin/data/catchup")
+def trigger_catchup(_: User = Depends(require_admin)) -> dict[str, Any]:
+    """Run a catch-up pass now, on a background thread, instead of waiting for the schedule.
+
+    Returns immediately: a pass can take minutes, and the request must not hold a connection open for it.
+    The job takes the same advisory lock as the scheduled one, so a concurrent request or a scheduled run
+    skips rather than duplicating work. Poll /api/v1/data/gaps to watch the gap shrink.
+    """
+    import threading
+
+    from nse_platform.worker.jobs import job_catchup
+
+    threading.Thread(target=job_catchup, name="catchup-manual", daemon=True).start()
+    return {"started": True, "watch": "/api/v1/data/gaps"}
 
 
 @router.get("/admin/users")
