@@ -44,6 +44,22 @@ def _start_in_process_scheduler():  # noqa: ANN202
     return sched
 
 
+def _start_bootstrap_thread():  # noqa: ANN202
+    """Run the first-run data load beside the server instead of before it.
+
+    A daemon thread, so the port is bound immediately and the host does not fail the deploy waiting for a
+    multi-year backfill. Deliberately not an APScheduler job: it must also run when the scheduler lives in a
+    separate worker. job_bootstrap is self-guarding, so this is a no-op once data is present.
+    """
+    import threading
+
+    from nse_platform.worker.jobs import job_bootstrap
+
+    t = threading.Thread(target=job_bootstrap, name="bootstrap", daemon=True)
+    t.start()
+    return t
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ANN201
     s = get_settings()
@@ -55,6 +71,7 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
                                "`nse-cli purge-synthetic` (ADR-0007).")
     scheduler = _start_in_process_scheduler() if s.run_scheduler_in_api else None
     app.state.scheduler = scheduler
+    app.state.bootstrap = _start_bootstrap_thread() if s.bootstrap_on_start else None
     yield
     if scheduler is not None:
         scheduler.shutdown(wait=True)  # let a running job finish before the process exits
@@ -99,6 +116,9 @@ def create_app() -> FastAPI:
         cache = get_cache()
         checks["redis"] = {"configured": cache.configured, "ok": cache.ping(),
                            "required": False}
+        boot = getattr(app.state, "bootstrap", None)
+        checks["bootstrap"] = {"enabled": get_settings().bootstrap_on_start,
+                               "running": bool(boot and boot.is_alive())}
         sched = getattr(app.state, "scheduler", None)
         checks["scheduler"] = {
             "in_process": get_settings().run_scheduler_in_api,

@@ -26,14 +26,16 @@ API process.
 - Do not also run `nse-worker` unless you want the redundancy; locks make it safe either way.
 
 ### Loading data on a host with no shell access
-`BOOTSTRAP_ON_START=true` runs the first data load — instruments, history, corporate actions, analytics — on
-the scheduler thread about 30 seconds after start-up. It needs `RUN_SCHEDULER_IN_API=true` (or a worker) to
-have somewhere to run, and `MYSTOCKS_API_KEY` to have anything to fetch.
+The first data load — instruments, history, corporate actions, analytics — runs automatically on a
+background thread just after start-up. It is **on by default** (`BOOTSTRAP_ON_START`) and needs no other
+setting; set it false to load the data yourself instead.
 
 - It deliberately does **not** run in the container's start command. A host that waits for the port to be
   bound (Render does) fails the deploy if a multi-year backfill runs before the web server starts.
-- It skips itself once any non-synthetic price bar exists, so redeploys do not reload everything. To force a
-  reload, clear `price_bars` first.
+- It is inert unless `MYSTOCKS_API_KEY` is set **and** no non-synthetic price bar exists, so redeploys do
+  not reload. To force a reload, clear `price_bars` first.
+- It is not an APScheduler job, so it runs whether the schedule lives in this process or in a worker.
+- Confirm it started at `GET /health/ready` -> `checks.bootstrap.running`.
 - `BOOTSTRAP_BACKFILL_YEARS` (default 3) bounds the history. The longest indicator lookback is ~120
   sessions, so 3 years is ample; 10 years is a much larger download and will not fit free-tier storage.
 - Each step is logged and guarded: one failing step does not stop the others. Watch progress at

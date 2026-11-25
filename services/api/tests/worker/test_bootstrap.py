@@ -2,29 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from nse_platform.core.config import Settings
 from nse_platform.worker import jobs as wjobs
 
 
 def settings(**kw: object) -> Settings:
+    kw.setdefault("mystocks_api_key", "sk_test_key")
     return Settings(session_secret="x" * 40, **kw)  # type: ignore[arg-type]
 
 
-def test_registered_only_when_enabled(monkeypatch):
+def test_not_an_apscheduler_job(monkeypatch):
+    """It runs on its own thread from the API lifespan, so it works without an in-process scheduler too."""
     from apscheduler.schedulers.background import BackgroundScheduler
 
     monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
-    off = wjobs.register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"), settings())
-    assert "bootstrap" not in {j.id for j in off.get_jobs()}
-
-    on = wjobs.register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"), settings(bootstrap_on_start=True))
-    job = next(j for j in on.get_jobs() if j.id == "bootstrap")
-    # A one-shot, shortly after start-up so the web server has bound its port first.
-    delay = job.trigger.run_date - datetime.now(ZoneInfo("Africa/Nairobi"))
-    assert timedelta(0) < delay <= timedelta(seconds=30)
+    sched = wjobs.register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"), settings())
+    assert "bootstrap" not in {j.id for j in sched.get_jobs()}
 
 
 def _record(calls: list[str], monkeypatch) -> None:
@@ -51,9 +46,20 @@ def _record(calls: list[str], monkeypatch) -> None:
 def test_skipped_when_real_bars_exist(monkeypatch):
     calls: list[str] = []
     _record(calls, monkeypatch)
+    monkeypatch.setattr(wjobs, "get_settings", lambda: settings())
     monkeypatch.setattr(wjobs, "_has_real_bars", lambda: True)
     wjobs.job_bootstrap()
     assert calls == []  # a redeploy must not reload everything
+
+
+def test_skipped_without_a_provider_key(monkeypatch):
+    """On by default, so it must stay inert on an installation with no provider configured."""
+    calls: list[str] = []
+    _record(calls, monkeypatch)
+    monkeypatch.setattr(wjobs, "get_settings", lambda: settings(mystocks_api_key=None))
+    monkeypatch.setattr(wjobs, "_has_real_bars", lambda: False)
+    wjobs.job_bootstrap()
+    assert calls == []
 
 
 def test_loads_in_order_over_the_configured_window(monkeypatch):

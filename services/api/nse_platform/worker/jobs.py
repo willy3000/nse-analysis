@@ -16,12 +16,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from nse_platform.core.config import Settings, get_settings
@@ -101,19 +100,24 @@ def _has_real_bars() -> bool:
 def job_bootstrap() -> None:
     """One-off first-run load: instruments, history, corporate actions, then analytics.
 
-    Runs here rather than in the container's start command so the API binds its port immediately: a host that
-    waits for the port fails the deploy if a multi-year backfill runs first. Skips itself once real bars
-    exist, so a redeploy does not repeat it. Each step is guarded, so one failure does not stop the rest.
+    Runs on a background thread just after start-up, never in the container's start command: a host that
+    waits for the port to be bound fails the deploy if a multi-year backfill runs first. Skips itself once
+    real bars exist, so a redeploy does not repeat it. Each step is guarded, so one failure does not stop
+    the rest.
     """
     from datetime import date
 
     from nse_platform.analytics.pipeline import run_analytics
     from nse_platform.ingestion import jobs
 
+    s = get_settings()
+    if s.mystocks_api_key is None:
+        log.info("bootstrap_skipped_no_provider_key")
+        return
     if _has_real_bars():
         log.info("bootstrap_skipped_data_present")
         return
-    start = date(date.today().year - get_settings().bootstrap_backfill_years, 1, 1)
+    start = date(date.today().year - s.bootstrap_backfill_years, 1, 1)
     provs = _providers()
     log.info("bootstrap_started", extra={"history_from": start.isoformat()})
     _guard("bootstrap_instruments", lambda: asyncio.run(jobs.sync_instruments(provs)))
@@ -163,11 +167,6 @@ def register_jobs(sched: BaseScheduler, s: Settings) -> BaseScheduler:
     sched.add_job(job_corporate, CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=tz), id="corporate")
     sched.add_job(job_weekly, CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=tz), id="weekly")
     sched.add_job(job_backtests, IntervalTrigger(seconds=s.backtest_poll_seconds, timezone=tz), id="backtests")
-    if s.bootstrap_on_start:
-        # Delayed so the web server is already accepting requests. It then occupies the single job thread for
-        # its whole run, so the first quote poll may be skipped; coalescing picks the schedule back up after.
-        sched.add_job(job_bootstrap, DateTrigger(run_date=datetime.now(ZoneInfo(tz)) + timedelta(seconds=30)),
-                      id="bootstrap")
     if resolve_self_ping_url(s):
         sched.add_job(job_self_ping, IntervalTrigger(minutes=s.self_ping_minutes, timezone=tz),
                       id="self_ping", next_run_time=datetime.now(ZoneInfo(tz)))
