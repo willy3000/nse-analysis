@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -42,9 +43,26 @@ def _guard(name: str, fn) -> None:  # noqa: ANN001
         log.exception("job_crashed", extra={"job": name})
 
 
+def _db_ready(job: str) -> bool:
+    """False (with one short log line) when the database is unreachable, so a job can skip instead of crash.
+
+    Without this gate a job started during a database outage does no useful work but still opens a
+    connection and logs a full traceback on every tick - the 5-second backtest poll turned one outage into
+    hundreds of identical stack traces. The gate caches its probe, so the skip is cheap.
+    """
+    from nse_platform.core.db import db_gate
+
+    if db_gate.confirm():
+        return True
+    log.warning("job_skipped_db_unavailable", extra={"job": job, "error": db_gate.last_error})
+    return False
+
+
 def job_quotes() -> None:
     from nse_platform.ingestion import jobs
 
+    if not _db_ready("poll_quotes"):
+        return
     _guard("poll_quotes", lambda: asyncio.run(jobs.poll_quotes(_providers())))
 
 
@@ -53,6 +71,8 @@ def job_eod() -> None:
     from nse_platform.analytics.pipeline import run_analytics
     from nse_platform.ingestion import jobs
 
+    if not _db_ready("eod"):
+        return
     _guard("ingest_history", lambda: asyncio.run(jobs.ingest_history(_providers())))
     _guard("analytics", run_analytics)
     _guard("alerts", evaluate_all)
@@ -61,6 +81,8 @@ def job_eod() -> None:
 def job_corporate() -> None:
     from nse_platform.ingestion import jobs
 
+    if not _db_ready("corporate"):
+        return
     _guard("ingest_corporate", lambda: asyncio.run(jobs.ingest_corporate(_providers())))
 
 
@@ -69,6 +91,8 @@ def job_weekly() -> None:
     from nse_platform.analytics.validation import run_score_validation
     from nse_platform.ingestion import jobs
 
+    if not _db_ready("weekly"):
+        return
     _guard("sync_instruments", lambda: asyncio.run(jobs.sync_instruments(_providers())))
     _guard("analytics_replay", lambda: run_analytics(replay=True))
     _guard("score_validation", run_score_validation)
@@ -76,12 +100,21 @@ def job_weekly() -> None:
 
 def job_backtests() -> None:
     from nse_platform.backtesting.runner import process_queue
+    from nse_platform.core.db import db_gate, is_transient_db_error
 
+    if not _db_ready("backtests"):
+        return
     try:
         done = process_queue()
         if done:
             log.info("backtests_processed", extra={"runs": done})
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_transient_db_error(exc):
+            # Connectivity, not a queue bug. Still reported, but as one line rather than a stack trace every
+            # BACKTEST_POLL_SECONDS, and the gate suppresses the next ticks until the database answers again.
+            log.warning("backtest_queue_db_unavailable", extra={"error": f"{type(exc).__name__}: {exc}"})
+            db_gate.confirm(force=True)
+            return
         log.exception("backtest_queue_error")
 
 
@@ -93,26 +126,35 @@ def _bootstrap_gaps() -> tuple[bool, bool]:
     """
     from sqlalchemy import select
 
-    from nse_platform.core.db import session_scope
+    from nse_platform.core.db import session_scope, with_db_retry
     from nse_platform.models import Instrument, InstrumentSnapshot, PriceBar
 
-    with session_scope() as s:
-        bars = s.scalar(select(PriceBar.instrument_id)
-                        .join(Instrument, Instrument.id == PriceBar.instrument_id)
-                        .where(Instrument.is_synthetic.is_(False)).limit(1))
-        snaps = s.scalar(select(InstrumentSnapshot.instrument_id)
-                         .join(Instrument, Instrument.id == InstrumentSnapshot.instrument_id)
-                         .where(Instrument.is_synthetic.is_(False)).limit(1))
-    return bars is None, snaps is None
+    def _probe() -> tuple[bool, bool]:
+        with session_scope() as s:
+            bars = s.scalar(select(PriceBar.instrument_id)
+                            .join(Instrument, Instrument.id == PriceBar.instrument_id)
+                            .where(Instrument.is_synthetic.is_(False)).limit(1))
+            snaps = s.scalar(select(InstrumentSnapshot.instrument_id)
+                             .join(Instrument, Instrument.id == InstrumentSnapshot.instrument_id)
+                             .where(Instrument.is_synthetic.is_(False)).limit(1))
+        return bars is None, snaps is None
+
+    # Read-only, so it is safe to run again from the start after a dropped connection.
+    return with_db_retry("bootstrap_gaps", _probe)
 
 
-def job_bootstrap() -> None:
+def job_bootstrap() -> bool:
     """One-off first-run load: instruments, history, corporate actions, then analytics.
 
     Runs on a background thread just after start-up, never in the container's start command: a host that
     waits for the port to be bound fails the deploy if a multi-year backfill runs first. Skips itself once
     real bars exist, so a redeploy does not repeat it. Each step is guarded, so one failure does not stop
     the rest.
+
+    Returns True when there is nothing left to do (loaded, or legitimately skipped) and False when it should
+    be tried again - see `bootstrap_thread_target`, which owns the retrying. Never raises: this runs as the
+    only call on a one-shot thread, and an escaping exception killed that thread for the life of the
+    process, so the first-run load never happened at all.
     """
     from datetime import date
 
@@ -120,15 +162,30 @@ def job_bootstrap() -> None:
     from nse_platform.ingestion import jobs
 
     s = get_settings()
-    if s.mystocks_api_key is None:
+    # A blank value counts as absent. Hosts hand an unset variable through as "", which is not None, so the
+    # load used to start with an unconfigured provider, fetch nothing, and - now that it retries - do it
+    # repeatedly.
+    key = s.mystocks_api_key.get_secret_value().strip() if s.mystocks_api_key is not None else ""
+    if not key:
         log.info("bootstrap_skipped_no_provider_key")
-        return
-    needs_history, needs_analytics = _bootstrap_gaps()
+        return True
+    try:
+        needs_history, needs_analytics = _bootstrap_gaps()
+    except Exception as exc:  # noqa: BLE001 - reported, then retried by the caller
+        log.exception("bootstrap_gaps_failed")
+        from nse_platform.core.db import is_transient_db_error
+
+        # A query or data error will not fix itself on the next attempt; connectivity may.
+        return not is_transient_db_error(exc)
     if not needs_history and not needs_analytics:
         log.info("bootstrap_skipped_data_present")
-        return
+        return True
     start = date(date.today().year - s.bootstrap_backfill_years, 1, 1)
-    provs = _providers()
+    try:
+        provs = _providers()
+    except Exception:  # noqa: BLE001 - a bad provider configuration is not retryable
+        log.exception("bootstrap_providers_failed")
+        return True
     log.info("bootstrap_started", extra={"history": needs_history, "analytics": needs_analytics,
                                          "history_from": start.isoformat()})
     if needs_history:
@@ -137,6 +194,45 @@ def job_bootstrap() -> None:
         _guard("bootstrap_corporate", lambda: asyncio.run(jobs.ingest_corporate(provs)))
     _guard("bootstrap_analytics", lambda: run_analytics(replay=True))
     log.info("bootstrap_finished")
+    # Each step is individually guarded, so "finished" does not mean "complete". Re-check, and let the
+    # caller try again if the analytics snapshots that Overview reads are still missing.
+    try:
+        still_missing = any(_bootstrap_gaps())
+    except Exception:  # noqa: BLE001 - the load itself ran; do not spin on a failing probe
+        log.exception("bootstrap_verify_failed")
+        return True
+    if still_missing:
+        log.warning("bootstrap_incomplete")
+    return not still_missing
+
+
+def bootstrap_thread_target() -> None:
+    """Thread body for the first-run load: wait for the database, then retry the load until it sticks.
+
+    The load is the only way a fresh deployment gets price bars and analytics snapshots, and it ran exactly
+    once - during start-up, which is also when a managed database is least likely to be reachable. One DNS
+    failure therefore left the deployment permanently empty. So: confirm connectivity first, then retry a
+    load that reports itself incomplete, with bounded exponential backoff.
+    """
+    from nse_platform.core.db import db_gate
+
+    s = get_settings()
+    if not db_gate.wait(s.db_ready_timeout_seconds):
+        log.error("bootstrap_abandoned_db_unreachable", extra={"error": db_gate.last_error})
+        return
+    delay = max(s.db_retry_base_seconds, 5.0)
+    for attempt in range(1, s.bootstrap_max_attempts + 1):
+        try:
+            if job_bootstrap():
+                return
+        except Exception:  # noqa: BLE001 - job_bootstrap should not raise; belt and braces for the thread
+            log.exception("bootstrap_unexpected_error", extra={"attempt": attempt})
+        if attempt == s.bootstrap_max_attempts:
+            log.error("bootstrap_gave_up", extra={"attempts": attempt})
+            return
+        log.info("bootstrap_retry_scheduled", extra={"attempt": attempt, "sleep": round(delay, 1)})
+        time.sleep(delay)
+        delay = min(delay * 2, s.bootstrap_retry_max_seconds)
 
 
 def resolve_self_ping_url(s: Settings) -> str | None:

@@ -25,6 +25,55 @@ API process.
 - Confirm it is live at `GET /health/ready` -> `checks.scheduler`, which lists each job's next run time.
 - Do not also run `nse-worker` unless you want the redundancy; locks make it safe either way.
 
+**When to stop sharing the API process.** `RUN_SCHEDULER_IN_API=true` is a cost concession, not the better
+topology, and it has real costs: the jobs and the request handlers share one connection pool, so a backfill
+competes with requests for connections; a CPU-bound analytics replay slows responses for minutes; the whole
+schedule dies with the web process (and stops entirely while a free instance sleeps); and job failures and
+request failures land in the same log stream. Separate `nse-worker` as soon as the host allows a background
+process — in particular once any of these is true: more than one API replica, a full analytics replay that
+takes longer than a minute, backtests that users wait on, or a paid Postgres plan where the connection
+budget no longer forces one process. Nothing in the code needs to change: the same `register_jobs` schedule
+and the same advisory locks apply, so flipping the flag off and starting the worker is the whole migration.
+
+### Database connectivity, pooling and retries
+The pool is **per process** and shared by request handlers, the scheduler thread and the bootstrap thread.
+Managed plans cap *total* connections low — Render's smallest Postgres allows roughly 22 across every client
+— so the budget is `(DB_POOL_SIZE + DB_MAX_OVERFLOW) x processes x replicas`, and it must stay under that
+cap with room for `psql` and migrations. Defaults are 5 + 5, i.e. 10 per process.
+
+An over-sized pool is a cause of outage, not a cushion: once the server hits `max_connections` it refuses
+or terminates connections, which surfaces in the log as `SSL error: unexpected eof while reading` rather
+than as anything that names connection limits.
+
+- `pool_pre_ping` validates a connection on checkout; `DB_POOL_RECYCLE` (300 s) retires it before the host
+  drops it while idle. Neither helps a connection already held open by a running job — hence the TCP
+  keepalives in `core/db.py`.
+- `DB_CONNECT_TIMEOUT` bounds connect and DNS; without it a resolution failure can block a thread.
+- `with_db_retry()` retries a whole unit of work on transient connectivity failures (DNS, TLS teardown,
+  dropped connections) with bounded exponential backoff and jitter, then re-raises. Query, data and
+  integrity errors are never retried.
+- Background jobs run only once one `SELECT 1` has succeeded (`core/db.DatabaseGate`). While the database is
+  unreachable, jobs log a single `job_skipped_db_unavailable` line and re-probe at most every
+  `DB_GATE_RECHECK_SECONDS` instead of reconnecting — and logging a traceback — on every tick.
+- `GET /health/ready` reports `checks.database.jobs_gate_open` (and `jobs_gate_error`) plus
+  `checks.scheduler.waiting_for_database`. The gate is only populated once a job or the scheduler starter
+  has looked, so `false` means "not asked yet" as well as "unreachable" — read it with `checks.database.ok`,
+  which is this endpoint's own live probe.
+- `alembic upgrade head` in the entrypoint retries with backoff (`MIGRATION_MAX_ATTEMPTS`, default 6), so a
+  database that is not reachable in the first seconds of a deploy no longer aborts it.
+
+The **backtest queue polls every `BACKTEST_POLL_SECONDS` (default 5)**, which is the heaviest source of
+connection churn in the process — roughly 17k checkouts a day, and it was what filled the log during the
+outage. Raise it if the database is remote and backtest latency does not matter.
+
+If the database host **fails to resolve** (`failed to resolve host 'dpg-...-a': Name or service not known`),
+that is infrastructure, not application code, and no retry policy will fix it. On Render the `dpg-xxxx-a`
+short name is the *internal* hostname, which resolves only from a service in the same account **and
+region** while the database is live. Check, in order: that the database is not suspended, expired or
+deleted (free Postgres expires); that the web service and the database are in the same region; and that
+`DATABASE_URL` uses the internal hostname only from inside Render — otherwise use the external
+`dpg-xxxx-a.<region>-postgres.render.com` form, which resolves publicly and requires TLS.
+
 ### Loading data on a host with no shell access
 The first data load — instruments, history, corporate actions, analytics — runs automatically on a
 background thread just after start-up. It is **on by default** (`BOOTSTRAP_ON_START`) and needs no other

@@ -10,7 +10,11 @@ from nse_platform.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, which would set `disabled = True` on every logger not named
+    # in alembic.ini - i.e. all of `nse_platform.*`. That is harmless when migrations run as their own
+    # process, but silences the application's logging for the rest of the process whenever they run
+    # in-process (`nse-cli`, the test suite), which is exactly when the logs are needed.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

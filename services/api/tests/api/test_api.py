@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -302,8 +303,16 @@ def test_in_process_scheduler_flag(seeded, monkeypatch):
     monkeypatch.setenv("RUN_SCHEDULER_IN_API", "true")
     try:
         with TestClient(create_app()) as c:
-            sch = c.get("/health/ready").json()["checks"]["scheduler"]
-            assert sch["in_process"] and sch["running"]
+            # The jobs are deliberately held until one `SELECT 1` succeeds, so the scheduler starts a moment
+            # after the port is bound rather than during start-up. Poll instead of assuming.
+            for _ in range(100):
+                sch = c.get("/health/ready").json()["checks"]["scheduler"]
+                if sch["running"]:
+                    break
+                assert sch["waiting_for_database"], sch
+                time.sleep(0.05)
+            assert sch["in_process"] and sch["running"], sch
+            assert sch["waiting_for_database"] is False
             # Same job set as the standalone worker, each with a scheduled next run.
             assert set(sch["next_runs"]) == {j.id for j in build_scheduler().get_jobs()}
             assert all(v for v in sch["next_runs"].values())

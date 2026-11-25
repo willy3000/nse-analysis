@@ -37,6 +37,13 @@ def run() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    # Confirm the database answers before any job runs. Jobs started against an unreachable database do no
+    # work and log a traceback per tick; the 5-second backtest poll turns one outage into a flood.
+    from nse_platform.core.db import db_gate
+
+    if not db_gate.wait(s.db_ready_timeout_seconds):
+        log.error("worker_db_unreachable", extra={"error": db_gate.last_error})
+        sys.exit(1)  # let the host restart us rather than tick uselessly
     log.info("worker_started", extra={"jobs": [j.id for j in sched.get_jobs()]})
     if "--once" in sys.argv:
         job_eod()

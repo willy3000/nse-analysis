@@ -17,8 +17,27 @@ class Settings(BaseSettings):
     log_json: bool = True
 
     database_url: str = "postgresql+psycopg://nse:nse@localhost:5432/nse"
-    db_pool_size: int = 10
-    db_max_overflow: int = 10
+    # Per process, and shared by request handlers, the scheduler thread and the bootstrap thread. Managed
+    # Postgres plans cap *total* connections low (Render's smallest allows roughly 22 across all clients and
+    # all replicas), so these defaults stay small on purpose: an over-sized pool is what exhausts the server
+    # and gets connections terminated underneath us.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 10
+    db_pool_recycle: int = 300  # managed hosts drop idle connections well inside 30 minutes
+    db_connect_timeout: int = 10  # so a DNS or routing failure cannot block a thread indefinitely
+
+    # Bounded exponential retry for transient database connectivity failures (DNS, TLS teardown, dropped
+    # connections). Query, data and integrity errors are never retried.
+    db_retry_attempts: int = 4
+    db_retry_base_seconds: float = 0.5
+    db_retry_max_seconds: float = 15.0
+    # How long start-up waits for the database before giving up on the background threads (the API itself
+    # still binds its port and serves /health/live regardless).
+    db_ready_timeout_seconds: float = 300.0
+    # How often a background job re-probes connectivity while the database is down. Keeps a 5-second poll
+    # from re-opening a connection - and logging a traceback - on every tick of an outage.
+    db_gate_recheck_seconds: float = 30.0
 
     redis_url: str | None = None
 
@@ -54,6 +73,10 @@ class Settings(BaseSettings):
     # setting: it does nothing unless a provider key is set and the database holds no real price bars yet.
     bootstrap_on_start: bool = True
     bootstrap_backfill_years: int = 3
+    # The first-run load is the only thing that fills a fresh database, and it starts at the moment a
+    # managed database is least likely to answer. Retry it rather than leave the deployment empty.
+    bootstrap_max_attempts: int = 5
+    bootstrap_retry_max_seconds: float = 300.0
 
     @model_validator(mode="after")
     def _production_guards(self) -> Settings:
