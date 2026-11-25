@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from nse_platform.core.config import Settings
+from nse_platform.core.config import Settings, get_settings
 
 log = logging.getLogger("nse_platform.worker")
 
@@ -82,6 +85,37 @@ def job_backtests() -> None:
         log.exception("backtest_queue_error")
 
 
+def resolve_self_ping_url(s: Settings) -> str | None:
+    """Public base URL to ping, from SELF_PING_URL or the host's own variable (Render sets this)."""
+    raw = s.self_ping_url or os.environ.get("RENDER_EXTERNAL_URL") or ""
+    raw = raw.strip().rstrip("/")
+    if not raw:
+        return None
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    return raw
+
+
+def job_self_ping() -> None:
+    """GET our own /health/live so an idle free-tier instance is not put to sleep.
+
+    Deliberately hits /health/live, which returns a static response and touches neither the database nor
+    Redis. The request must go to the public URL: a loopback call never reaches the host's router and so
+    would not count as activity.
+    """
+    import httpx
+
+    base = resolve_self_ping_url(get_settings())
+    if not base:
+        return
+    url = f"{base}/health/live"
+    try:
+        r = httpx.get(url, timeout=10.0, headers={"User-Agent": "nse-platform-selfping/1"})
+        log.debug("self_ping", extra={"url": url, "status": r.status_code})
+    except Exception as exc:  # noqa: BLE001 - never let a failed ping affect the schedule
+        log.warning("self_ping_failed", extra={"url": url, "error": repr(exc)})
+
+
 def register_jobs(sched: BaseScheduler, s: Settings) -> BaseScheduler:
     """Attach every scheduled job to `sched`. Used by both worker processes and the API's in-process scheduler."""
     tz = s.market_timezone
@@ -91,6 +125,9 @@ def register_jobs(sched: BaseScheduler, s: Settings) -> BaseScheduler:
     sched.add_job(job_corporate, CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=tz), id="corporate")
     sched.add_job(job_weekly, CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=tz), id="weekly")
     sched.add_job(job_backtests, IntervalTrigger(seconds=s.backtest_poll_seconds, timezone=tz), id="backtests")
+    if resolve_self_ping_url(s):
+        sched.add_job(job_self_ping, IntervalTrigger(minutes=s.self_ping_minutes, timezone=tz),
+                      id="self_ping", next_run_time=datetime.now(ZoneInfo(tz)))
     return sched
 
 

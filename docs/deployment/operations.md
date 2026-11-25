@@ -25,6 +25,20 @@ API process.
 - Confirm it is live at `GET /health/ready` -> `checks.scheduler`, which lists each job's next run time.
 - Do not also run `nse-worker` unless you want the redundancy; locks make it safe either way.
 
+### Keeping a free-tier instance awake
+Hosts that sleep idle instances stop the schedule while asleep. `SELF_PING_MINUTES` (default 10) makes the
+app request its own `/health/live` on that interval, which returns a static response and touches neither
+the database nor Redis, so it costs no database quota.
+
+- The ping must reach the **public** URL; a loopback request never reaches the host's router and would not
+  count as activity. On Render, `RENDER_EXTERNAL_URL` is picked up automatically; elsewhere set
+  `SELF_PING_URL=https://your-api-host`. Leave both unset to disable (the default).
+- It registers only when a URL resolves, and runs once at startup and then on the interval.
+- A failed ping is logged (`self_ping_failed`) and never interrupts the other jobs.
+- **Free-tier hours:** staying awake all month uses roughly 730 instance-hours. Render's free web-service
+  allowance is 750 hours per month *across the account*, so one always-awake service consumes nearly all
+  of it. A paid Starter instance avoids both the sleeping and the quota.
+
 ## Recommended hosting (single user)
 
 | Component | Option |

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Run the scheduled jobs inside the API process instead of a separate `nse-worker` process. Useful on
     # hosts that do not offer a background worker. The API instance must not sleep, or jobs stop running.
     run_scheduler_in_api: bool = False
+    # Keep a free-tier host from sleeping by requesting our own /health/live (no database, no Redis).
+    # Leave the URL empty to disable; on Render, RENDER_EXTERNAL_URL is picked up automatically.
+    self_ping_url: str | None = None
+    self_ping_minutes: int = 10
     market_timezone: str = "Africa/Nairobi"
     quote_poll_minutes: int = 15
     backtest_poll_seconds: int = 5
