@@ -288,3 +288,30 @@ def test_paper_order_ticket(client):
     assert sold["portfolio"]["positions"] == [] and sold["filled"]["held_after"] == 0
     assert client.post(f"/api/v1/portfolio/{p['id']}/orders", json={"symbol": "ZZAIR", "side": "BUY",
                                                                      "quantity": 100}, headers=h).status_code == 400
+
+
+def test_in_process_scheduler_flag(seeded, monkeypatch):
+    """RUN_SCHEDULER_IN_API starts the same jobs as the worker and reports them on /health/ready."""
+    from fastapi.testclient import TestClient
+
+    from nse_platform.core.config import get_settings
+    from nse_platform.main import create_app
+    from nse_platform.worker.main import build_scheduler
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("RUN_SCHEDULER_IN_API", "true")
+    try:
+        with TestClient(create_app()) as c:
+            sch = c.get("/health/ready").json()["checks"]["scheduler"]
+            assert sch["in_process"] and sch["running"]
+            # Same job set as the standalone worker, each with a scheduled next run.
+            assert set(sch["next_runs"]) == {j.id for j in build_scheduler().get_jobs()}
+            assert all(v for v in sch["next_runs"].values())
+    finally:
+        monkeypatch.delenv("RUN_SCHEDULER_IN_API")
+        get_settings.cache_clear()
+
+
+def test_scheduler_off_by_default(client):
+    sch = client.get("/health/ready").json()["checks"]["scheduler"]
+    assert sch["in_process"] is False and sch["running"] is False and "nse-worker" in sch["note"]

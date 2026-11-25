@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -19,6 +20,28 @@ from nse_platform.core.logging import configure_logging
 from nse_platform.models import Instrument
 
 VERSION = "0.1.0"
+log = logging.getLogger("nse_platform.api")
+
+
+def _start_in_process_scheduler():  # noqa: ANN202
+    """Start the scheduled jobs inside this API process (RUN_SCHEDULER_IN_API=true).
+
+    For hosts without a background worker. Jobs run on a single background thread, and each one takes a
+    Postgres advisory lock, so extra API replicas skip rather than duplicate work. A long analytics run shares
+    this process with request handling, so responses can slow down while it runs; prefer a separate
+    `nse-worker` process when the host allows one.
+    """
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    from nse_platform.worker.jobs import JOB_DEFAULTS, register_jobs
+
+    s = get_settings()
+    sched = BackgroundScheduler(timezone=s.market_timezone, job_defaults=JOB_DEFAULTS,
+                                executors={"default": {"type": "threadpool", "max_workers": 1}})
+    register_jobs(sched, s)
+    sched.start()
+    log.info("in_process_scheduler_started", extra={"jobs": [j.id for j in sched.get_jobs()]})
+    return sched
 
 
 @asynccontextmanager
@@ -30,7 +53,11 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
         if n:
             raise RuntimeError(f"{n} synthetic instruments present in a production database. Run "
                                "`nse-cli purge-synthetic` (ADR-0007).")
+    scheduler = _start_in_process_scheduler() if s.run_scheduler_in_api else None
+    app.state.scheduler = scheduler
     yield
+    if scheduler is not None:
+        scheduler.shutdown(wait=True)  # let a running job finish before the process exits
     get_engine().dispose()  # graceful shutdown: close pooled connections
 
 
@@ -72,6 +99,15 @@ def create_app() -> FastAPI:
         cache = get_cache()
         checks["redis"] = {"configured": cache.configured, "ok": cache.ping(),
                            "required": False}
+        sched = getattr(app.state, "scheduler", None)
+        checks["scheduler"] = {
+            "in_process": get_settings().run_scheduler_in_api,
+            "running": bool(sched and sched.running),
+            "next_runs": {j.id: j.next_run_time.isoformat() if j.next_run_time else None
+                          for j in sched.get_jobs()} if sched else None,
+            "note": None if get_settings().run_scheduler_in_api
+            else "Scheduled jobs run in the separate `nse-worker` process.",
+        }
         return JSONResponse(status_code=200 if ok else 503,
                             content={"status": "ok" if ok else "unavailable", "version": VERSION, "checks": checks})
 

@@ -180,8 +180,7 @@ def _simulate(symbol: str, seed: int, end: date) -> tuple[tuple[tuple, ...], dic
     rows = []
     div_days = _dividend_schedule(spec, end)
     paid: dict[date, float] = {}
-    surge_at = {}
-    surge_until: dict[int, tuple[int, float]] = {}
+    surge_at: dict[date, tuple[float, float]] = {}
     if spec.surges:
         live_days = [d for d in days if not (spec.gap and spec.gap[0] <= d <= spec.gap[1])]
         for off, jump, post in spec.surges:

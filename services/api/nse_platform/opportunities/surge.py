@@ -229,7 +229,7 @@ def build_sheet(db: Session, sig: OpportunitySignal, inst: Instrument, shares: i
 
     # --- data quality around the surge
     dq = []
-    for d, close, high, vol, quality in bars[:3]:
+    for d, close, high, _vol, quality in bars[:3]:
         if quality != "OK":
             dq.append(f"{d}: bar flagged {quality} by validation")
         if high and close and high > 2.5 * close:

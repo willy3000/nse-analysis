@@ -13,6 +13,18 @@
 
 Do **not** run the worker on serverless platforms; it needs a persistent process.
 
+### Running without a separate worker
+Hosts that charge for background workers (Render, for example) can run the schedule inside the API instead:
+set `RUN_SCHEDULER_IN_API=true` on the API service. The same jobs then run on one background thread in the
+API process.
+
+- The API instance must stay awake. On a host that sleeps idle instances (Render's free web service), the
+  schedule stops while it sleeps.
+- A long analytics run shares the process with request handling, so responses can slow for a few minutes.
+- Extra API replicas are safe: each job takes a Postgres advisory lock, so replicas skip rather than duplicate.
+- Confirm it is live at `GET /health/ready` -> `checks.scheduler`, which lists each job's next run time.
+- Do not also run `nse-worker` unless you want the redundancy; locks make it safe either way.
+
 ## Recommended hosting (single user)
 
 | Component | Option |

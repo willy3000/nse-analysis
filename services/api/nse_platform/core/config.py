@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     allow_synthetic_in_production: bool = False
 
     # Worker
+    # Run the scheduled jobs inside the API process instead of a separate `nse-worker` process. Useful on
+    # hosts that do not offer a background worker. The API instance must not sleep, or jobs stop running.
+    run_scheduler_in_api: bool = False
     market_timezone: str = "Africa/Nairobi"
     quote_poll_minutes: int = 15
     backtest_poll_seconds: int = 5
