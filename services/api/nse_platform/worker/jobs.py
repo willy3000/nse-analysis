@@ -85,16 +85,25 @@ def job_backtests() -> None:
         log.exception("backtest_queue_error")
 
 
-def _has_real_bars() -> bool:
+def _bootstrap_gaps() -> tuple[bool, bool]:
+    """(needs_history, needs_analytics) for the real universe.
+
+    Checked separately on purpose. A part-finished earlier load can leave bars behind with no analytics, and
+    Overview reads the snapshots, not the bars - so "some bars exist" must not be taken to mean "done".
+    """
     from sqlalchemy import select
 
     from nse_platform.core.db import session_scope
-    from nse_platform.models import Instrument, PriceBar
+    from nse_platform.models import Instrument, InstrumentSnapshot, PriceBar
 
     with session_scope() as s:
-        return s.scalar(select(PriceBar.instrument_id)
+        bars = s.scalar(select(PriceBar.instrument_id)
                         .join(Instrument, Instrument.id == PriceBar.instrument_id)
-                        .where(Instrument.is_synthetic.is_(False)).limit(1)) is not None
+                        .where(Instrument.is_synthetic.is_(False)).limit(1))
+        snaps = s.scalar(select(InstrumentSnapshot.instrument_id)
+                         .join(Instrument, Instrument.id == InstrumentSnapshot.instrument_id)
+                         .where(Instrument.is_synthetic.is_(False)).limit(1))
+    return bars is None, snaps is None
 
 
 def job_bootstrap() -> None:
@@ -114,15 +123,18 @@ def job_bootstrap() -> None:
     if s.mystocks_api_key is None:
         log.info("bootstrap_skipped_no_provider_key")
         return
-    if _has_real_bars():
+    needs_history, needs_analytics = _bootstrap_gaps()
+    if not needs_history and not needs_analytics:
         log.info("bootstrap_skipped_data_present")
         return
     start = date(date.today().year - s.bootstrap_backfill_years, 1, 1)
     provs = _providers()
-    log.info("bootstrap_started", extra={"history_from": start.isoformat()})
-    _guard("bootstrap_instruments", lambda: asyncio.run(jobs.sync_instruments(provs)))
-    _guard("bootstrap_history", lambda: asyncio.run(jobs.ingest_history(provs, start=start, incremental=False)))
-    _guard("bootstrap_corporate", lambda: asyncio.run(jobs.ingest_corporate(provs)))
+    log.info("bootstrap_started", extra={"history": needs_history, "analytics": needs_analytics,
+                                         "history_from": start.isoformat()})
+    if needs_history:
+        _guard("bootstrap_instruments", lambda: asyncio.run(jobs.sync_instruments(provs)))
+        _guard("bootstrap_history", lambda: asyncio.run(jobs.ingest_history(provs, start=start, incremental=False)))
+        _guard("bootstrap_corporate", lambda: asyncio.run(jobs.ingest_corporate(provs)))
     _guard("bootstrap_analytics", lambda: run_analytics(replay=True))
     log.info("bootstrap_finished")
 
