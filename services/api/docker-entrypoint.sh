@@ -1,21 +1,30 @@
 #!/bin/sh
-set -e
 
-# Run database migrations
+# Run database migrations (must succeed)
 echo "Running migrations..."
-python -m alembic upgrade head
+if ! python -m alembic upgrade head; then
+    echo "ERROR: Migrations failed"
+    exit 1
+fi
 
 # Load real market data if MyStocks API key is configured
 if [ -n "$MYSTOCKS_API_KEY" ]; then
     echo "Loading market data from MyStocks..."
-    if python -m nse_platform.cli sync-instruments --provider mystocks && \
-       python -m nse_platform.cli backfill --provider mystocks && \
-       python -m nse_platform.cli ingest-corporate --provider mystocks && \
-       python -m nse_platform.cli analytics --replay; then
-        echo "Market data loaded successfully"
-    else
-        echo "Warning: Market data loading failed, but API will start anyway"
-    fi
+
+    # Run each step independently so failures don't block later steps
+    echo "1. Syncing instruments..."
+    python -m nse_platform.cli sync-instruments --provider mystocks || echo "Warning: sync-instruments failed"
+
+    echo "2. Backfilling price data..."
+    python -m nse_platform.cli backfill --provider mystocks || echo "Warning: backfill failed"
+
+    echo "3. Ingesting corporate actions..."
+    python -m nse_platform.cli ingest-corporate --provider mystocks || echo "Warning: ingest-corporate failed"
+
+    echo "4. Calculating analytics and signals..."
+    python -m nse_platform.cli analytics --replay || echo "Warning: analytics failed"
+
+    echo "Market data loading complete (some steps may have failed, but API will start)"
 else
     echo "MYSTOCKS_API_KEY not set; skipping market data load"
 fi
