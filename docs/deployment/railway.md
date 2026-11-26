@@ -5,14 +5,20 @@ Railway — the arrangement this app wants, because every query then stays on Ra
 instead of crossing the public internet. See [operations.md](operations.md) for how the app behaves once it
 is running (pooling, retries, the first-run data load, backups, monitoring).
 
-Four services in one Railway project, all in the **same region**:
+**Three** services in one Railway project, all in the **same region**:
 
 | Service | Image | Command | Public domain |
 |---|---|---|---|
 | `postgres` | Railway Postgres | — | no |
 | `api` | `infrastructure/docker/api.Dockerfile` | image default (migrate, then serve) | optional |
-| `worker` | the same Dockerfile | `python -m nse_platform.worker.main` | no |
 | `web` | `infrastructure/docker/web.Dockerfile` | image default | **yes** |
+
+The schedule runs inside the API (`RUN_SCHEDULER_IN_API=true`), not in a separate `worker`. On Railway a
+worker is a second billable service, and for a single-user deployment the in-process scheduler is the
+cheaper, simpler default - the connection budget that made it awkward on a small Render Postgres is gone.
+`worker.json` is kept ready for when splitting is worth it: more than one API replica, an analytics replay
+over a minute, or backtests users wait on (see [operations.md](operations.md), "When to stop sharing the
+API process"). Flipping the flag and deploying that config is the whole migration - no code changes.
 
 Config-as-code lives in [infrastructure/railway/](../../infrastructure/railway/): point each service's
 **Settings → Config as code** at `infrastructure/railway/api.json`, `worker.json` or `web.json`. That file
@@ -25,18 +31,25 @@ Every service builds from the **repo root**. The Dockerfiles copy by repo-relati
 (`COPY services/api/...`, `COPY apps/web ...`), so a service whose Root Directory points at a subfolder
 fails to build.
 
-| Setting | `api` | `worker` | `web` |
+| Setting | `api` | `web` | `worker`, if ever added |
 |---|---|---|---|
 | Root Directory | *empty* (`/`) | *empty* (`/`) | *empty* (`/`) |
-| Config as code | `infrastructure/railway/api.json` | `infrastructure/railway/worker.json` | `infrastructure/railway/web.json` |
+| Config as code | `infrastructure/railway/api.json` | `infrastructure/railway/web.json` | `infrastructure/railway/worker.json` |
 | Build command | *empty* (Dockerfile builder) | *empty* | *empty* |
-| Start command | *empty* (image default) | from the config file | *empty* (image default) |
-| Healthcheck path | `/health/live` (config file) | none | `/` (config file) |
-| Public domain | optional | no | **yes** |
-| Target port | 8000 | — | 3000 |
-| Watch paths | `services/api/**`, `infrastructure/docker/api.Dockerfile` | same as `api` | `apps/web/**`, `infrastructure/docker/web.Dockerfile` |
+| Start command | *empty* (image default) | *empty* (image default) | from the config file |
+| Healthcheck path | `/health/live` (config file) | `/` (config file) | none |
+| Public domain | optional | **yes** | no |
+| Target port | 8000 | 3000 | — |
+| Watch paths | `services/api/**`, `infrastructure/docker/api.Dockerfile` | `apps/web/**`, `infrastructure/docker/web.Dockerfile` | same as `api` |
 
-Watch paths are optional but stop a web-only change from rebuilding and restarting the API and worker.
+Root Directory must stay at the repo root. Railway's Root Directory is the Docker build context, and
+pointing it at `services/api` makes every `COPY services/api/...` resolve to `services/api/services/api/...`
+and fail. A service that will not build for want of a directory usually needs its *builder* set instead:
+with no Dockerfile at the repo root, Railway falls back to Nixpacks and cannot plan a monorepo. The
+config-as-code file pins `"builder": "DOCKERFILE"` and the Dockerfile path, which is what stops the
+guessing.
+
+Watch paths are optional but stop a web-only change from rebuilding and restarting the API.
 
 ## 1. Database
 
@@ -58,8 +71,7 @@ is a supported target.
 
 ## 2. Variables
 
-Set these on **both** `api` and `worker` (a Railway shared variable group is the tidy way — the two must
-not drift):
+On `api`:
 
 ```
 APP_ENV=production
@@ -70,30 +82,37 @@ CORS_ORIGINS=["https://<web public domain>"]
 MYSTOCKS_API_KEY=<key>
 MYSTOCKS_ENV=production          # sandbox until KYB is approved
 ENABLE_SYNTHETIC_PROVIDER=false
+ALLOW_REGISTRATION=true          # set false once your account exists
+BIND_HOST=::
+PORT=8000
+RUN_SCHEDULER_IN_API=true
+BOOTSTRAP_ON_START=true
 ```
+
+If you later split the worker out, everything above except `BIND_HOST`, `PORT`, `RUN_SCHEDULER_IN_API` and
+`BOOTSTRAP_ON_START` belongs on both services - a Railway shared variable group is the tidy way, since the
+two must not drift. The first-run load always runs in the API process (`main.py` starts it on its own
+thread whenever `BOOTSTRAP_ON_START` is true, independently of the scheduler flag), so a worker would take
+`BOOTSTRAP_ON_START=false`.
 
 A Railway variable *reference* keeps the password out of the variable list, and reaches the private host
 rather than the proxy. `Postgres.` is the database **service's name** as the sidebar shows it, case
 included - rename the service and these references must follow. A bare `${{PGUSER}}` resolves only inside
 the Postgres service itself; from `api` or `worker` it silently yields an empty user and host, so the
-namespace is not optional. Railway's variable picker autocompletes the correct form. Referencing `${{Postgres.DATABASE_URL}}` directly would not work: the
+namespace is not optional. Railway's variable picker autocompletes the correct form.
+
+Referencing `${{Postgres.DATABASE_URL}}` directly would not work: the
 `postgresql+psycopg://` prefix is **required** — a bare `postgresql://` URL routes SQLAlchemy to psycopg2,
 which is not installed here, and the app will not start — and Railway's own `DATABASE_URL` points at the
 public proxy. Composing it from the parts above fixes both.
-
-`api` only:
-
-```
-BIND_HOST=::
-PORT=8000
-```
 
 `BIND_HOST=::` is not cosmetic. Railway's private network resolves `*.railway.internal` over IPv6 (and, in
 environments created after 16 October 2025, IPv4 as well), so a process bound only to `0.0.0.0` receives no
 private traffic at all and `web` cannot reach `api`. `::` covers both stacks on a dual-stack container.
 
-`worker` only — leave `RUN_SCHEDULER_IN_API` at its default `false` on `api`, so exactly one process owns
-the schedule. (Advisory locks make a double-run safe, but there is no reason to pay for it.)
+`RUN_SCHEDULER_IN_API=true` is what makes the three-service layout work: the quote poll, end-of-day
+analytics, alerts, backtests and `catchup` run on one background thread in the API. Run that flag *or* a
+`worker`, not both - advisory locks make a double-run safe, but there is no reason to pay for it.
 
 `web` only:
 
@@ -140,10 +159,10 @@ the provider. That loses only user data, which is exactly the part worth keeping
 2. Restore the dump (or skip, per above).
 3. Deploy `api`. Its entrypoint runs `alembic upgrade head` with bounded retries before binding the port, so
    a database that is briefly unreachable at deploy time no longer aborts the deploy.
-4. Deploy `worker`. It waits for one successful `SELECT 1` before any job runs, and exits non-zero if the
-   database stays unreachable past `DB_READY_TIMEOUT_SECONDS`, letting Railway restart it.
-5. Deploy `web` with `API_ORIGIN` already set, and give it the public domain.
-6. Create your account, then set `ALLOW_REGISTRATION=false` on `api` and redeploy.
+   Jobs do not start until one `SELECT 1` has succeeded, so a slow database delays the schedule rather
+   than filling the log with tracebacks.
+4. Deploy `web` with `API_ORIGIN` already set, and give it the public domain.
+5. Create your account, then set `ALLOW_REGISTRATION=false` on `api` and redeploy.
 
 ## 5. Verify
 
@@ -156,9 +175,10 @@ the provider. That loses only user data, which is exactly the part worth keeping
 
 ## Pooling, now that the database is not the bottleneck
 
-Defaults stay 5 + 5 per process. With `api` and `worker` as separate services that is 20 connections
-against a Railway Postgres that allows roughly 100, so there is room to raise `DB_POOL_SIZE` and
-`DB_MAX_OVERFLOW` to 10 + 10 once the database has the RAM to match. The budget is
+Defaults stay 5 + 5 per process, so the single `api` service holds 10 connections against a Railway
+Postgres that allows roughly 100. There is room to raise `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` to 10 + 10
+once the database has the RAM to match - and the jobs share this pool with request handlers, which is the
+main cost of not running a separate worker. The budget is
 `(DB_POOL_SIZE + DB_MAX_OVERFLOW) × processes × replicas`, and it must stay under `max_connections` with
 room for `psql` and migrations — an over-sized pool is a cause of outage, not a cushion.
 

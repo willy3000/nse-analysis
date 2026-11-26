@@ -19,7 +19,7 @@ Do **not** run the worker on serverless platforms; it needs a persistent process
 
 ### Running without a separate worker
 Hosts that charge for background workers, or offer only a web service, can run the schedule inside the API
-instead (Railway bills a worker like any other service, so prefer the separate `worker` there):
+instead. This is the deployed default on Railway, where a worker is a second billable service:
 set `RUN_SCHEDULER_IN_API=true` on the API service. The same jobs then run on one background thread in the
 API process.
 
