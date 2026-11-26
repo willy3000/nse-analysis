@@ -12,7 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, cn, Select, Spinner } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useApi, useDataUpdates, useMe, useUniverse } from "@/lib/hooks";
-import { applyTheme, readStoredTheme, type Theme } from "@/lib/theme";
+import { applyTheme, ensureThemeApplied, type Theme } from "@/lib/theme";
 import type { DataHealth } from "@/lib/types";
 
 export const NAV = [
@@ -39,7 +39,10 @@ function useTheme(): [Theme, () => void] {
   // Starts at the default rather than at "unknown": the pre-paint script has already applied the real
   // theme, and the effect below corrects the icon on mount if the stored choice was light.
   const [theme, setTheme] = useState<Theme>("dark");
-  useEffect(() => setTheme(readStoredTheme()), []);
+  // `ensureThemeApplied` rather than a plain read: the class the pre-paint script added sits on an <html>
+  // the server rendered without one, so hydration can drop it and leave the page light while storage says
+  // dark. This reconciles the document with the stored choice and reports what it settled on.
+  useEffect(() => setTheme(ensureThemeApplied()), []);
   const toggle = () => {
     const next: Theme = theme === "dark" ? "light" : "dark";
     applyTheme(next);

@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   applyTheme,
+  ensureThemeApplied,
   readStoredTheme,
   THEME_EVENT,
   THEME_KEY,
@@ -19,8 +20,19 @@ import {
 /** Run the shipped pre-paint script exactly as the browser would on a cold load. */
 function coldLoad() {
   document.documentElement.classList.remove("dark");
+  document.documentElement.removeAttribute("data-theme");
   // eslint-disable-next-line no-new-func
   new Function(themeBootstrapScript)();
+}
+
+/**
+ * What hydration does when it goes wrong: the server rendered <html> without a class, so reconciling that
+ * element can strip the class the pre-paint script added, leaving the stored preference intact but the
+ * page painted light.
+ */
+function hydrationDropsTheClass() {
+  document.documentElement.classList.remove("dark");
+  document.documentElement.removeAttribute("data-theme");
 }
 
 const isDark = () => document.documentElement.classList.contains("dark");
@@ -28,6 +40,7 @@ const isDark = () => document.documentElement.classList.contains("dark");
 beforeEach(() => {
   window.localStorage.clear();
   document.documentElement.classList.remove("dark");
+  document.documentElement.removeAttribute("data-theme");
 });
 
 describe("default", () => {
@@ -103,11 +116,59 @@ describe("storage is unavailable", () => {
 });
 
 describe("readStoredTheme", () => {
-  it("reports the live DOM state, not a guess", () => {
+  it("follows the choice through a cold load and a toggle", () => {
     coldLoad();
     expect(readStoredTheme()).toBe("dark");
     applyTheme("light");
     expect(readStoredTheme()).toBe("light");
+  });
+
+  it("trusts storage over a class that no longer matches it", () => {
+    applyTheme("light");
+    document.documentElement.classList.add("dark"); // something restyled the document behind our back
+    // Asking the DOM would answer "dark" and the next toggle would then send the user to light again.
+    expect(readStoredTheme()).toBe("light");
+  });
+
+  it("falls back to the rendered theme when nothing is stored", () => {
+    coldLoad(); // no stored value; the script paints the default
+    expect(window.localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(readStoredTheme()).toBe("dark");
+  });
+});
+
+describe("surviving hydration", () => {
+  it("restores dark after the class is dropped", () => {
+    applyTheme("dark");
+    hydrationDropsTheClass();
+    expect(isDark()).toBe(false); // the bug as the user sees it: light page, dark stored
+    expect(ensureThemeApplied()).toBe("dark");
+    expect(isDark()).toBe(true);
+  });
+
+  it("restores light after the class is dropped, rather than forcing the default", () => {
+    applyTheme("light");
+    document.documentElement.classList.add("dark");
+    document.documentElement.removeAttribute("data-theme");
+    expect(ensureThemeApplied()).toBe("light");
+    expect(isDark()).toBe(false);
+  });
+
+  it("gives a new user dark without inventing a stored preference", () => {
+    coldLoad();
+    hydrationDropsTheClass();
+    expect(ensureThemeApplied()).toBe("dark");
+    expect(isDark()).toBe(true);
+    // A repair must not record a choice the user never made, or the default could never change.
+    expect(window.localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("changes nothing when the document already agrees", () => {
+    applyTheme("light");
+    const before = document.documentElement.className;
+    expect(ensureThemeApplied()).toBe("light");
+    expect(document.documentElement.className).toBe(before);
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("light");
   });
 });
 

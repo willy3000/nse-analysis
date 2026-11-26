@@ -11,7 +11,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 
-import { readStoredTheme, THEME_EVENT, type Theme } from "@/lib/theme";
+import { ensureThemeApplied, readStoredTheme, THEME_EVENT, type Theme } from "@/lib/theme";
 import type { Bar } from "@/lib/types";
 
 /**
@@ -25,7 +25,7 @@ import type { Bar } from "@/lib/types";
 function useThemeName(): Theme {
   const [theme, setTheme] = useState<Theme>("dark");
   useEffect(() => {
-    setTheme(readStoredTheme());
+    setTheme(ensureThemeApplied());
     const onChange = () => setTheme(readStoredTheme());
     window.addEventListener(THEME_EVENT, onChange);
     return () => window.removeEventListener(THEME_EVENT, onChange);
