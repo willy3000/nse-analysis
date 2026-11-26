@@ -6,7 +6,7 @@ RUN npm ci --no-audit --no-fund
 FROM node:22-alpine AS build
 WORKDIR /app
 # Rewrites (/api -> backend) are resolved at build time: set the internal API URL here.
-ARG API_ORIGIN=http://api:8000
+ARG API_ORIGIN=http://api:8080
 ENV API_ORIGIN=$API_ORIGIN NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY apps/web ./

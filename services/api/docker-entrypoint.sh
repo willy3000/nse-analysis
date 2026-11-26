@@ -35,7 +35,10 @@ echo "Starting API..."
 # never receives private traffic and `web` cannot reach `api` at all. Set BIND_HOST=:: there, which covers
 # both stacks on a dual-stack container. 0.0.0.0 stays the default, for compose and for hosts that route
 # over IPv4.
-# PORT defaults to 8000 to match EXPOSE, the image healthcheck, docker-compose's published port and the web
-# proxy's fallback. Render and Railway both inject their own PORT, which wins.
-exec python -m uvicorn nse_platform.main:app --host "${BIND_HOST:-0.0.0.0}" --port "${PORT:-8000}" \
+# PORT defaults to 8080, which is Railway's default target port, and matches EXPOSE, the image healthcheck,
+# docker-compose's published port, the dev script and the web proxy's fallback. One number, so a host that
+# injects its own PORT agrees with the image and a host that does not still lands somewhere reachable. A
+# mismatch here is invisible in the logs: the app starts fine and the platform's healthcheck dials a closed
+# port.
+exec python -m uvicorn nse_platform.main:app --host "${BIND_HOST:-0.0.0.0}" --port "${PORT:-8080}" \
   --proxy-headers --forwarded-allow-ips='*'

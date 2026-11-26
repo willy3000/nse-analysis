@@ -54,7 +54,7 @@ than as anything that names connection limits.
   drops it while idle. Neither helps a connection already held open by a running job — hence the TCP
   keepalives in `core/db.py`.
 - `DB_CONNECT_TIMEOUT` bounds connect and DNS; without it a resolution failure can block a thread.
-- `BIND_HOST` (default `0.0.0.0`) and `PORT` (default 8000) set the API's listening interface and port.
+- `BIND_HOST` (default `0.0.0.0`) and `PORT` (default 8080) set the API's listening interface and port.
   Hosts that inject `PORT` override the default; `BIND_HOST=::` is required on a private network that
   resolves over IPv6.
 - `with_db_retry()` retries a whole unit of work on transient connectivity failures (DNS, TLS teardown,
@@ -163,7 +163,7 @@ Production deploy (compose on a VPS behind a TLS reverse proxy such as Caddy or 
    - `MYSTOCKS_API_KEY`, and `MYSTOCKS_ENV=production` once your KYB is approved
    - `ENABLE_SYNTHETIC_PROVIDER=false`
 2. `docker compose up -d --build`. Migrations run automatically through the `migrate` service.
-3. Put HTTPS in front of port 3000 (web) only. Keep 8000 and 5432 private; compose binds them to 127.0.0.1.
+3. Put HTTPS in front of port 3000 (web) only. Keep 8080 and 5432 private; compose binds them to 127.0.0.1.
 4. Create your account, then set `ALLOW_REGISTRATION=false` and restart `api`.
 5. Load data: `docker compose run --rm api python -m nse_platform.cli sync-instruments --provider mystocks`, then `backfill`, `ingest-corporate` and `analytics --replay`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local stack without Docker: embedded Postgres + migrations + API (:8000) + worker + web (:3000).
+# Local stack without Docker: embedded Postgres + migrations + API (:8080) + worker + web (:3000).
 #   bash scripts/dev.sh          start everything (Ctrl+C stops the web app; API/worker keep running)
 #   bash scripts/dev.sh stop     stop API, worker and Postgres
 set -euo pipefail
@@ -22,7 +22,7 @@ done
 export DATABASE_URL="$URL"
 cd "$ROOT/services/api"
 "$PY" -m alembic upgrade head
-"$PY" -m uvicorn nse_platform.main:app --port 8000 > "$ROOT/.localdata/api.log" 2>&1 & echo $! >> "$PIDS"
+"$PY" -m uvicorn nse_platform.main:app --port 8080 > "$ROOT/.localdata/api.log" 2>&1 & echo $! >> "$PIDS"
 "$PY" -m nse_platform.worker.main > "$ROOT/.localdata/worker.log" 2>&1 & echo $! >> "$PIDS"
-echo "API :8000 and worker started (logs in .localdata/). Starting web on http://localhost:3000 ..."
+echo "API :8080 and worker started (logs in .localdata/). Starting web on http://localhost:3000 ..."
 cd "$ROOT/apps/web" && npx next dev -p 3000

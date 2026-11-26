@@ -42,7 +42,7 @@ fails to build.
 | Build command | *empty* (Dockerfile builder) | *empty* |
 | Start command | *empty* (image default) | from the config file |
 | Healthcheck path | `/health/live` (config file) | none |
-| Public domain | **yes**, target port 8000 | no |
+| Public domain | **yes**, target port 8080 | no |
 | Watch paths | `services/api/**`, `infrastructure/docker/api.Dockerfile` | same as `api` |
 
 **Root Directory must stay at the repo root, and this is where Railway differs from Netlify.** Netlify
@@ -90,7 +90,7 @@ MYSTOCKS_ENV=production          # sandbox until KYB is approved
 ENABLE_SYNTHETIC_PROVIDER=false
 ALLOW_REGISTRATION=true          # set false once your account exists
 BIND_HOST=::
-PORT=8000
+PORT=8080
 RUN_SCHEDULER_IN_API=true
 BOOTSTRAP_ON_START=true
 ```
@@ -183,7 +183,7 @@ the provider. That loses only user data, which is exactly the part worth keeping
    a database that is briefly unreachable at deploy time no longer aborts the deploy.
    Jobs do not start until one `SELECT 1` has succeeded, so a slow database delays the schedule rather
    than filling the log with tracebacks.
-4. Generate the API's public domain (target port 8000), put it in Netlify's `API_ORIGIN`, and trigger a
+4. Generate the API's public domain (target port 8080), put it in Netlify's `API_ORIGIN`, and trigger a
    Netlify rebuild so the new value is baked in.
 5. Create your account, then set `ALLOW_REGISTRATION=false` on `api` and redeploy.
 

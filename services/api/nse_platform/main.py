@@ -214,5 +214,5 @@ def run() -> None:
     import uvicorn
 
     s = get_settings()
-    uvicorn.run("nse_platform.main:app", host="0.0.0.0", port=8000, proxy_headers=True,  # noqa: S104
+    uvicorn.run("nse_platform.main:app", host="0.0.0.0", port=8080, proxy_headers=True,  # noqa: S104
                 forwarded_allow_ips="*" if s.app_env != "production" else "127.0.0.1", log_config=None)

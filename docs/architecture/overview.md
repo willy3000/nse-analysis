@@ -17,7 +17,7 @@ A **modular monolith with independently deployed processes** (ADR-0001). One Pyt
                      └──────┬───────────────┬───────────────┬───────┘
                             │               │               │
                      nse-worker        nse-api          nse-cli
-                     (APScheduler)     (uvicorn :8000)  (operator)
+                     (APScheduler)     (uvicorn :8080)  (operator)
                             │               │
                             └──► PostgreSQL ◄┘   Redis (optional cache/rate limits)
                                             ▲

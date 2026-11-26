@@ -19,7 +19,7 @@ TIMEOUT = 4.0
 
 
 def main() -> int:
-    port = os.environ.get("PORT", "8000")
+    port = os.environ.get("PORT", "8080")
     errors: list[str] = []
     for host in ("127.0.0.1", "[::1]"):
         url = f"http://{host}:{port}/health/live"

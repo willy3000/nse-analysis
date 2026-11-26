@@ -31,7 +31,7 @@ MyStocks Africa API (15-min delayed NSE data)      Licensed CSV files (optional)
 | Process | Job |
 |---|---|
 | **Worker** (`nse_platform.worker.main`) | Fetches data on a schedule, runs all analytics, evaluates alerts, runs backtests. |
-| **API** (port 8000) | Serves precomputed results to the browser. It never contacts the data provider itself, so the website stays fast and keeps working if the provider is down. |
+| **API** (port 8080) | Serves precomputed results to the browser. It never contacts the data provider itself, so the website stays fast and keeps working if the provider is down. |
 | **Web app** (port 3000) | The dashboard. All traffic goes through the API; the browser never talks to the provider or the database. |
 
 ### 1.1 Where the data comes from

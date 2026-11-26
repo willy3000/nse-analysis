@@ -16,7 +16,7 @@ services/api/.venv/Scripts/python -m pip install -e "services/api[dev]"   # .ven
 cp .env.example .env            # then set MYSTOCKS_API_KEY
 
 # every time
-bash scripts/dev.sh             # Postgres + migrations + API :8000 + worker + web :3000
+bash scripts/dev.sh             # Postgres + migrations + API :8080 + worker + web :3000
 bash scripts/dev.sh stop        # stop API, worker and Postgres
 ```
 

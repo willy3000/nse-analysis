@@ -4,7 +4,7 @@ _Updated 2026-11-13. All phases implemented. Deployment configs are written but 
 
 ## Run it
 ```bash
-bash scripts/dev.sh          # embedded Postgres + migrations + API :8000 + worker + web :3000
+bash scripts/dev.sh          # embedded Postgres + migrations + API :8080 + worker + web :3000
 bash scripts/dev.sh stop
 ```
 Or `docker compose up --build` (see [operations](docs/deployment/operations.md)). User guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md).

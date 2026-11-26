@@ -12,7 +12,7 @@ COPY services/api/docker-entrypoint.sh ./
 COPY services/api/healthcheck.py ./
 RUN chmod +x ./docker-entrypoint.sh
 USER app
-EXPOSE 8000
+EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["python", "healthcheck.py"]
 # Default: API with auto-data-load. Worker: `python -m nse_platform.worker.main`. Migrations: `python -m alembic upgrade head`.

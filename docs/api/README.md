@@ -1,6 +1,6 @@
 # API reference (v1)
 
-Interactive docs (OpenAPI/Swagger): **http://localhost:8000/api/docs**. Machine-readable: `/api/openapi.json`.
+Interactive docs (OpenAPI/Swagger): **http://localhost:8080/api/docs**. Machine-readable: `/api/openapi.json`.
 
 ## Conventions
 - Auth: session cookie `nse_session` (HttpOnly) from `POST /api/v1/auth/login`. All `/api/v1` endpoints except `auth/*` require it.
