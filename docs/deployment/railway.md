@@ -73,7 +73,10 @@ ENABLE_SYNTHETIC_PROVIDER=false
 ```
 
 A Railway variable *reference* keeps the password out of the variable list, and reaches the private host
-rather than the proxy. Referencing `${{Postgres.DATABASE_URL}}` directly would not work: the
+rather than the proxy. `Postgres.` is the database **service's name** as the sidebar shows it, case
+included - rename the service and these references must follow. A bare `${{PGUSER}}` resolves only inside
+the Postgres service itself; from `api` or `worker` it silently yields an empty user and host, so the
+namespace is not optional. Railway's variable picker autocompletes the correct form. Referencing `${{Postgres.DATABASE_URL}}` directly would not work: the
 `postgresql+psycopg://` prefix is **required** — a bare `postgresql://` URL routes SQLAlchemy to psycopg2,
 which is not installed here, and the app will not start — and Railway's own `DATABASE_URL` points at the
 public proxy. Composing it from the parts above fixes both.
