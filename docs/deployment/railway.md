@@ -5,13 +5,17 @@ Railway — the arrangement this app wants, because every query then stays on Ra
 instead of crossing the public internet. See [operations.md](operations.md) for how the app behaves once it
 is running (pooling, retries, the first-run data load, backups, monitoring).
 
-**Three** services in one Railway project, all in the **same region**:
+**Two** services in one Railway project, in the **same region**. The frontend is deployed separately on
+Netlify, so Railway hosts the backend only:
 
 | Service | Image | Command | Public domain |
 |---|---|---|---|
 | `postgres` | Railway Postgres | — | no |
-| `api` | `infrastructure/docker/api.Dockerfile` | image default (migrate, then serve) | optional |
-| `web` | `infrastructure/docker/web.Dockerfile` | image default | **yes** |
+| `api` | `infrastructure/docker/api.Dockerfile` | image default (migrate, then serve) | **yes** |
+
+The API's public domain is **required** in this layout, not optional: Netlify's Next server is what proxies
+the browser's `/api` calls, and it reaches the API over the public internet. `web.json` stays in the repo
+for the alternative where the frontend moves to Railway too, and is unused as things stand.
 
 The schedule runs inside the API (`RUN_SCHEDULER_IN_API=true`), not in a separate `worker`. On Railway a
 worker is a second billable service, and for a single-user deployment the in-process scheduler is the
@@ -31,20 +35,22 @@ Every service builds from the **repo root**. The Dockerfiles copy by repo-relati
 (`COPY services/api/...`, `COPY apps/web ...`), so a service whose Root Directory points at a subfolder
 fails to build.
 
-| Setting | `api` | `web` | `worker`, if ever added |
-|---|---|---|---|
-| Root Directory | *empty* (`/`) | *empty* (`/`) | *empty* (`/`) |
-| Config as code | `infrastructure/railway/api.json` | `infrastructure/railway/web.json` | `infrastructure/railway/worker.json` |
-| Build command | *empty* (Dockerfile builder) | *empty* | *empty* |
-| Start command | *empty* (image default) | *empty* (image default) | from the config file |
-| Healthcheck path | `/health/live` (config file) | `/` (config file) | none |
-| Public domain | optional | **yes** | no |
-| Target port | 8000 | 3000 | — |
-| Watch paths | `services/api/**`, `infrastructure/docker/api.Dockerfile` | `apps/web/**`, `infrastructure/docker/web.Dockerfile` | same as `api` |
+| Setting | `api` | `worker`, if ever added |
+|---|---|---|
+| Root Directory | *empty* (`/`) | *empty* (`/`) |
+| Config as code | `infrastructure/railway/api.json` | `infrastructure/railway/worker.json` |
+| Build command | *empty* (Dockerfile builder) | *empty* |
+| Start command | *empty* (image default) | from the config file |
+| Healthcheck path | `/health/live` (config file) | none |
+| Public domain | **yes**, target port 8000 | no |
+| Watch paths | `services/api/**`, `infrastructure/docker/api.Dockerfile` | same as `api` |
 
-Root Directory must stay at the repo root. Railway's Root Directory is the Docker build context, and
-pointing it at `services/api` makes every `COPY services/api/...` resolve to `services/api/services/api/...`
-and fail. A service that will not build for want of a directory usually needs its *builder* set instead:
+**Root Directory must stay at the repo root, and this is where Railway differs from Netlify.** Netlify
+builds the frontend with its own Node toolchain, so pointing its base directory at `apps/web` is right
+there. Railway builds a *Docker image*, and Root Directory is the build context: the Dockerfile copies
+`services/api/pyproject.toml` and the rest by repo-relative path, so a context of `services/api` makes
+those resolve to `services/api/services/api/...` and the build fails with `not found`. The same instinct
+that is correct on Netlify breaks the build here. A service that will not build for want of a directory usually needs its *builder* set instead:
 with no Dockerfile at the repo root, Railway falls back to Nixpacks and cannot plan a monorepo. The
 config-as-code file pins `"builder": "DOCKERFILE"` and the Dockerfile path, which is what stops the
 guessing.
@@ -78,7 +84,7 @@ APP_ENV=production
 DATABASE_URL=postgresql+psycopg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}
 SESSION_SECRET=<python -c "import secrets;print(secrets.token_urlsafe(48))">
 COOKIE_SECURE=true
-CORS_ORIGINS=["https://<web public domain>"]
+CORS_ORIGINS=["https://<your-site>.netlify.app"]
 MYSTOCKS_API_KEY=<key>
 MYSTOCKS_ENV=production          # sandbox until KYB is approved
 ENABLE_SYNTHETIC_PROVIDER=false
@@ -95,6 +101,10 @@ two must not drift. The first-run load always runs in the API process (`main.py`
 thread whenever `BOOTSTRAP_ON_START` is true, independently of the scheduler flag), so a worker would take
 `BOOTSTRAP_ON_START=false`.
 
+`CORS_ORIGINS` takes the Netlify domain as a literal. A `${{web.RAILWAY_PUBLIC_DOMAIN}}` reference cannot
+work here - there is no `web` service on Railway to reference - and the proxied calls arrive from Netlify's
+server rather than the browser, so CORS is barely exercised; it is set correctly for any direct call.
+
 A Railway variable *reference* keeps the password out of the variable list, and reaches the private host
 rather than the proxy. `Postgres.` is the database **service's name** as the sidebar shows it, case
 included - rename the service and these references must follow. A bare `${{PGUSER}}` resolves only inside
@@ -106,27 +116,39 @@ Referencing `${{Postgres.DATABASE_URL}}` directly would not work: the
 which is not installed here, and the app will not start — and Railway's own `DATABASE_URL` points at the
 public proxy. Composing it from the parts above fixes both.
 
-`BIND_HOST=::` is not cosmetic. Railway's private network resolves `*.railway.internal` over IPv6 (and, in
-environments created after 16 October 2025, IPv4 as well), so a process bound only to `0.0.0.0` receives no
-private traffic at all and `web` cannot reach `api`. `::` covers both stacks on a dual-stack container.
+`BIND_HOST=::` is Railway's documented value for a Python service and covers both stacks on a dual-stack
+container, which is why it stays. It is load-bearing only for *inbound private* traffic: Railway resolves
+`*.railway.internal` over IPv6 (and, in environments created after 16 October 2025, IPv4 as well), so a
+service that another Railway service calls privately must not bind `0.0.0.0` alone. With the frontend on
+Netlify nothing on Railway calls the API privately, so the `0.0.0.0` default would also serve public
+ingress - keep `::` anyway, and it is the first thing to flip if public requests ever fail to arrive.
+The API's own outbound connections to Postgres use the private network regardless of what it binds.
 
 `RUN_SCHEDULER_IN_API=true` is what makes the three-service layout work: the quote poll, end-of-day
 analytics, alerts, backtests and `catchup` run on one background thread in the API. Run that flag *or* a
 `worker`, not both - advisory locks make a double-run safe, but there is no reason to pay for it.
 
-`web` only:
+### On Netlify, not Railway
+
+The frontend needs one variable, set in **Netlify's** environment:
 
 ```
-API_ORIGIN=http://api.railway.internal:8000
-PORT=3000
+API_ORIGIN=https://<api public domain>.up.railway.app
 ```
 
-This one is consumed at **build** time: Next.js bakes `rewrites()` into the routes manifest, so the value
-must be present before the web image is built, and a later change needs a redeploy, not a restart. Railway
-makes service variables available as Docker build arguments, and `web.Dockerfile` already declares
-`ARG API_ORIGIN`. Verify after the first deploy by loading a page that fetches data; if the dashboard is
-empty and the web logs show connections to `http://api:8000`, the build did not pick the variable up — set
-it and redeploy rather than restart.
+It is consumed at **build** time — Next.js bakes `rewrites()` into its routes manifest — so changing it
+requires a Netlify **rebuild**, not a restart or a cache-cleared redeploy of the same build.
+
+That proxy is not a convenience, it is what makes authentication work. The session and CSRF cookies are set
+`httponly`, `samesite=lax` and without a `domain`, so they are host-only cookies for whichever origin the
+browser sees. With the Next rewrite in place the browser only ever talks to the Netlify origin, the proxy
+forwards `Set-Cookie` from the API, and the cookies attach to that origin. If the frontend were changed to
+call the Railway domain directly from the browser, those calls become cross-site, `samesite=lax` stops
+sending the session cookie, and logins break - fixing that properly means `SameSite=None`, credentialed
+CORS and revisiting CSRF, which is a code change and a security decision, not configuration (ADR-0005).
+
+This also requires that Netlify is running the Next server, rather than serving a static export - rewrites
+to an external origin need the server to be there to perform them.
 
 Self-ping (`SELF_PING_URL`) stays empty: Railway does not sleep instances by default. `RAILWAY_PUBLIC_DOMAIN`
 is read automatically if you ever do want it.
@@ -161,7 +183,8 @@ the provider. That loses only user data, which is exactly the part worth keeping
    a database that is briefly unreachable at deploy time no longer aborts the deploy.
    Jobs do not start until one `SELECT 1` has succeeded, so a slow database delays the schedule rather
    than filling the log with tracebacks.
-4. Deploy `web` with `API_ORIGIN` already set, and give it the public domain.
+4. Generate the API's public domain (target port 8000), put it in Netlify's `API_ORIGIN`, and trigger a
+   Netlify rebuild so the new value is baked in.
 5. Create your account, then set `ALLOW_REGISTRATION=false` on `api` and redeploy.
 
 ## 5. Verify
@@ -170,8 +193,11 @@ the provider. That loses only user data, which is exactly the part worth keeping
   `checks.scheduler.waiting_for_database`.
 - `GET /api/v1/data/runs` for job history, `GET /api/v1/data/health` for freshness,
   `GET /api/v1/data/gaps` for anything the loader still owes.
-- The web domain in a browser: the dashboard renders only if the private hop to `api` works, which is the
-  one thing this layout can get wrong.
+- `https://<api public domain>/health/live` directly: a Railway 404 means no service owns that hostname, a
+  502 means the domain is registered but nothing is serving HTTP behind it.
+- The Netlify domain in a browser, then log in. The dashboard renders only if Netlify's `API_ORIGIN` points
+  at the live Railway domain, and logging in succeeds only if the calls go through Netlify's proxy rather
+  than straight to Railway - the two things this layout can get wrong.
 
 ## Pooling, now that the database is not the bottleneck
 
@@ -189,5 +215,6 @@ day. On the private network that is cheap; it was only expensive when every chec
 
 - Private networking is free. The public TCP proxy is billed egress, which is why `DATABASE_URL` uses the
   internal host.
-- A `web` on Vercel instead of Railway is also fine, but then the browser's proxy hop leaves Railway: give
-  `api` a public domain, set `API_ORIGIN` to it, and put that domain in `CORS_ORIGINS`.
+- With the frontend on Netlify (or Vercel), the browser's proxy hop leaves Railway and arrives at the API's
+  public domain. That traffic is ordinary public ingress, not the billed database proxy, and the API's own
+  queries still stay on the private network - which is the hop that mattered.
