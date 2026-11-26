@@ -1,5 +1,9 @@
 # Deployment & operations
 
+Host-specific runbook: **[railway.md](railway.md)** (the current target — four services, private
+networking, moving the data across). This page is the host-neutral half: topology, pooling, the data load,
+backups and monitoring.
+
 ## Process topology
 
 | Process | Command | Scaling |
@@ -14,7 +18,8 @@
 Do **not** run the worker on serverless platforms; it needs a persistent process.
 
 ### Running without a separate worker
-Hosts that charge for background workers (Render, for example) can run the schedule inside the API instead:
+Hosts that charge for background workers, or offer only a web service, can run the schedule inside the API
+instead (Railway bills a worker like any other service, so prefer the separate `worker` there):
 set `RUN_SCHEDULER_IN_API=true` on the API service. The same jobs then run on one background thread in the
 API process.
 
@@ -49,6 +54,9 @@ than as anything that names connection limits.
   drops it while idle. Neither helps a connection already held open by a running job — hence the TCP
   keepalives in `core/db.py`.
 - `DB_CONNECT_TIMEOUT` bounds connect and DNS; without it a resolution failure can block a thread.
+- `BIND_HOST` (default `0.0.0.0`) and `PORT` (default 8000) set the API's listening interface and port.
+  Hosts that inject `PORT` override the default; `BIND_HOST=::` is required on a private network that
+  resolves over IPv6.
 - `with_db_retry()` retries a whole unit of work on transient connectivity failures (DNS, TLS teardown,
   dropped connections) with bounded exponential backoff and jitter, then re-raises. Query, data and
   integrity errors are never retried.
@@ -73,6 +81,12 @@ region** while the database is live. Check, in order: that the database is not s
 deleted (free Postgres expires); that the web service and the database are in the same region; and that
 `DATABASE_URL` uses the internal hostname only from inside Render — otherwise use the external
 `dpg-xxxx-a.<region>-postgres.render.com` form, which resolves publicly and requires TLS.
+
+On Railway the equivalent failure is `postgres.railway.internal` not resolving, which means the client is
+not on that project's private network (a local shell, or another provider) — use
+`railway connect postgres --tunnel-only` from outside, not the billed public proxy. A *connection* that
+hangs rather than failing to resolve is usually the IPv6 one: private DNS answers with an IPv6 address, so
+the API must bind `::` (`BIND_HOST=::`) rather than `0.0.0.0` or nothing reaches it.
 
 ### Loading data on a host with no shell access
 The first data load — instruments, history, corporate actions, analytics — runs automatically on a
@@ -130,9 +144,14 @@ the database nor Redis, so it costs no database quota.
 
 | Component | Option |
 |---|---|
-| Web | Vercel (set `API_ORIGIN` to the public API URL at build time) or the web container |
-| API + worker | One small VPS or container host (e.g. 1 vCPU / 2 GB) running `docker compose` |
-| Database | Managed Postgres (e.g. Timescale Cloud, Neon, RDS) or the compose `db` service with backups |
+| Web | The web container (Railway), or Vercel with `API_ORIGIN` set to the public API URL at build time |
+| API + worker | Two services from the one image (Railway), or a small VPS (1 vCPU / 2 GB) running `docker compose` |
+| Database | Managed Postgres with at least 1-2 GB of memory for this workload — Railway Postgres alongside the app services, Timescale Cloud, Neon, RDS, or the compose `db` service with backups |
+
+Keep the app and its database on the same provider and in the same region. Splitting them means every
+query crosses the public internet: on Railway specifically that is billed egress through a TCP proxy whose
+certificate cannot be verified, and the backtest poll alone checks out a connection roughly 17k times a
+day. See [railway.md](railway.md).
 
 Production deploy (compose on a VPS behind a TLS reverse proxy such as Caddy or Nginx):
 

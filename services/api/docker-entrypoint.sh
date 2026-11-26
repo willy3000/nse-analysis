@@ -30,5 +30,12 @@ while : ; do
 done
 
 echo "Starting API..."
-exec python -m uvicorn nse_platform.main:app --host 0.0.0.0 --port "${PORT:-10000}" \
+# BIND_HOST is the interface, not a preference. Railway's private network resolves `*.railway.internal` to
+# an IPv6 address (and, outside legacy environments, an IPv4 one too), so a process bound only to 0.0.0.0
+# never receives private traffic and `web` cannot reach `api` at all. Set BIND_HOST=:: there, which covers
+# both stacks on a dual-stack container. 0.0.0.0 stays the default, for compose and for hosts that route
+# over IPv4.
+# PORT defaults to 8000 to match EXPOSE, the image healthcheck, docker-compose's published port and the web
+# proxy's fallback. Render and Railway both inject their own PORT, which wins.
+exec python -m uvicorn nse_platform.main:app --host "${BIND_HOST:-0.0.0.0}" --port "${PORT:-8000}" \
   --proxy-headers --forwarded-allow-ips='*'

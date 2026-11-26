@@ -16,11 +16,23 @@ def settings(**kw: object) -> Settings:
 
 def test_url_resolution_order_and_normalisation(monkeypatch):
     monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
     assert resolve_self_ping_url(settings()) is None                      # disabled by default
     monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://api.onrender.com/")
     assert resolve_self_ping_url(settings()) == "https://api.onrender.com"  # trailing slash trimmed
     # An explicit setting wins over the host variable, and a bare host gets https.
     assert resolve_self_ping_url(settings(self_ping_url="my-api.example.com")) == "https://my-api.example.com"
+
+
+def test_railway_public_domain_is_a_bare_host_and_gets_a_scheme(monkeypatch):
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
+    # Railway publishes a hostname, not a URL; without a scheme httpx would reject the request.
+    monkeypatch.setenv("RAILWAY_PUBLIC_DOMAIN", "nse-api-production.up.railway.app")
+    assert resolve_self_ping_url(settings()) == "https://nse-api-production.up.railway.app"
+    # Render's variable wins when a deployment somehow carries both.
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://api.onrender.com")
+    assert resolve_self_ping_url(settings()) == "https://api.onrender.com"
 
 
 @respx.mock
@@ -59,6 +71,7 @@ def test_job_registered_only_when_url_configured(monkeypatch):
     from apscheduler.schedulers.background import BackgroundScheduler
 
     monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
     off = register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"), settings())
     assert "self_ping" not in {j.id for j in off.get_jobs()}
     on = register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"),

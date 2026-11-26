@@ -131,6 +131,7 @@ class TestScheduled:
         from apscheduler.schedulers.background import BackgroundScheduler
 
         monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+        monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
         sched = wjobs.register_jobs(BackgroundScheduler(timezone="Africa/Nairobi"), _settings())
         assert "catchup" in {j.id for j in sched.get_jobs()}
 

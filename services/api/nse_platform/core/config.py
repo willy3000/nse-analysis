@@ -63,7 +63,8 @@ class Settings(BaseSettings):
     # hosts that do not offer a background worker. The API instance must not sleep, or jobs stop running.
     run_scheduler_in_api: bool = False
     # Keep a free-tier host from sleeping by requesting our own /health/live (no database, no Redis).
-    # Leave the URL empty to disable; on Render, RENDER_EXTERNAL_URL is picked up automatically.
+    # Leave the URL empty to disable; RENDER_EXTERNAL_URL and RAILWAY_PUBLIC_DOMAIN are picked up
+    # automatically. Railway does not sleep instances by default, so it is normally not needed there.
     self_ping_url: str | None = None
     self_ping_minutes: int = 10
     market_timezone: str = "Africa/Nairobi"

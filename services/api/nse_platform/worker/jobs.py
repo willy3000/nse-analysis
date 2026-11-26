@@ -309,8 +309,16 @@ def bootstrap_thread_target() -> None:
 
 
 def resolve_self_ping_url(s: Settings) -> str | None:
-    """Public base URL to ping, from SELF_PING_URL or the host's own variable (Render sets this)."""
-    raw = s.self_ping_url or os.environ.get("RENDER_EXTERNAL_URL") or ""
+    """Public base URL to ping, from SELF_PING_URL or whichever variable the host publishes.
+
+    RAILWAY_PUBLIC_DOMAIN is a bare hostname, not a URL, which the normalisation below turns into https://.
+    Railway does not sleep instances by default, so the ping is usually unnecessary there - it is read so
+    that the setting behaves the same on both hosts, not because it is needed.
+    """
+    raw = (s.self_ping_url
+           or os.environ.get("RENDER_EXTERNAL_URL")
+           or os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+           or "")
     raw = raw.strip().rstrip("/")
     if not raw:
         return None
